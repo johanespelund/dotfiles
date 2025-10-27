@@ -1,0 +1,20 @@
+if [ -n "$WSL_DISTRO_NAME" ]; then
+    # WSL aliases
+    alias of2206=". /usr/lib/openfoam/openfoam2206/etc/bashrc"
+    alias of2212=". /usr/lib/openfoam/openfoam2212/etc/bashrc"
+    alias of2312='source /usr/lib/openfoam/openfoam2312/etc/bashrc'
+    alias firefox="/mnt/c/Program\ Files/Mozilla\ Firefox/firefox.exe"
+    alias SumatraPDF='/mnt/c/Users/johane/AppData/Local/SumatraPDF/SumatraPDF.exe'
+    # alias paraview="/mnt/c/Program\ Files/ParaView\ 5.11.0/bin/paraview.exe"
+    # alias paraFoam='local folder=${PWD##*/}; touch $folder.foam && paraview $folder.foam &'
+    alias of11='. /opt/openfoam11/etc/bashrc'
+    alias of12='source ~/OpenFOAM/OpenFOAM-12/etc/bashrc'
+else
+    # Native Ubuntu aliases
+    alias salome='~/SALOME-9.9.0/salome'
+    alias of2206='source /usr/lib/openfoam/openfoam2206/etc/bashrc'
+    alias of2312='source /usr/lib/openfoam/openfoam2312/etc/bashrc'
+    alias of11='source /opt/openfoam11/etc/bashrc'
+    alias of12='source ~/OpenFOAM/OpenFOAM-12/etc/bashrc'
+fi
+
