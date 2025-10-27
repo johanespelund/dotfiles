@@ -1,0 +1,200 @@
+snippet lnk "Link" b
+  #link("${1:url}")[${2:label}]
+
+snippet lscape "Landscape" b
+    // set page to landscape
+    #set page(
+      flipped: true,
+    )
+
+    ${0}
+
+    //set page back to portrait
+    #set page(
+      flipped: false,
+    )
+
+snippet apdx "Appendix" b
+  #pagebreak(weak: true)
+  // appendix
+  #let appendix(body) = {
+    set heading(numbering: "A.1"/*, supplement: [Appendices]*/)
+    counter(heading).update(0)
+    body
+  }
+  #show: appendix
+  // appendices hereon
+
+snippet ref "Bibliography" b
+  #bibliography(title: "references", "${1:filename_incl_path}.bib")
+
+snippet bib "Bibliography entry" b
+  @book{${1:key},
+    author  = "${2:author}",
+    title   = "${3:title}",
+    edition = "{${4:document number and revision}}",
+    date    = "${5:year and month in yyyy-mm}",
+  },
+
+snippet cod "Insert code file" b
+  #let ${1:subj} = read("${2:filepath}${1:subj}.py")
+  #{linebreak();raw(${1:subj}, lang: "python")}
+
+snippet fig "Figure" b
+  #figure(
+    image("${1:filename_incl_path}", width: 100%),
+      caption: [${2:Description}]
+  ) <${3:label}>
+
+snippet file "File" b
+  #include "${1:filename_incl_path}"
+
+snippet hd "Set heading number format hereon" b
+  #set heading(numbering: "1.1")
+
+snippet elseart "Load elsearticle template" b
+  #import "@preview/cetz:0.4.1"
+  #import "@preview/unify:0.7.1": num,qty,numrange,qtyrange
+  #import "@preview/physica:0.9.5": *
+  #import "@preview/elsearticle:1.0.0": *
+
+  #show: elsearticle.with(
+    title: "${1:title}",
+    authors: (
+      (
+        name: "Johan. R. Espelund",
+        // affiliation: "University A, City A, Country A",
+        // corr: "johan.r.espelund@ntnu.no",
+        id: "",
+      ),
+    ),
+    // journal: "Name of the Journal",
+    // abstract: "Hello!",
+    // keywords: ("keyword 1", "keyword 2"),
+    format: "preprint",
+    // line-numbering: true,
+    )
+
+snippet note "Note" b
+  #import "@preview/cetz:0.4.1"
+  #import "@preview/unify:0.7.1": num,qty,numrange,qtyrange
+  #import "@preview/physica:0.9.5": *
+  #import "/templates/note.typ": note
+
+  #show: note.with(
+    title: "${1:title}",
+    )
+
+
+snippet pb "Page break" b
+  #pagebreak(weak: true)
+
+snippet tbl "Table" b
+  #figure(
+    table(
+      columns: (auto, 1fr),
+      inset: 10pt,
+      align: horizon,
+      [label1], [label2],
+      [Full spectrum], [0.358],
+      [Narrow band], [0.343],
+    ),
+    caption: [${1:Description}],
+  ) <${2:label}>
+
+snippet letter "Letter" b
+  #import "letter-template.typ": letter
+  #show: letter.with(
+    sender: [
+      ${1:name_and_address}  
+    ],
+    recipient: [
+      ${2:name_and_address}		  
+    ],
+    date: [#datetime.today().display("[month repr:long] [day], [year]")],
+    subject: [${3:subject}],
+    name: [],			  
+  )
+  // letter content hereon
+  ${4:letter_content_hereon}
+
+snippet ltmpl "Letter template" b
+  // ckunte's custom letter template -- 2024
+  // This function gets your whole document as its `body`
+  // and formats it as a simple letter.
+  #let letter(
+    // The letter's sender, which is display at the top of the page.
+    sender: none,
+
+    // The letter's recipient, which is displayed close to the top.
+    recipient: none,
+
+    // The date, displayed to the right.
+    date: none,
+
+    // The subject line.
+    subject: none,
+
+    // The name with which the letter closes.
+    name: none,
+
+    // The letter's content.
+    body
+  ) = {
+    // Configure page and text properties.
+    set page(
+      paper: "a5",
+      margin: (top: 15mm), 
+      numbering: "1",
+      )
+    set text(
+      font: "erewhon", // options: erewhon, Courier Prime, etc
+      size: 10pt,
+      top-edge: "cap-height", 
+      bottom-edge: "baseline",
+      number-type: "old-style",
+      // size: 10pt // 11pt is default
+      )  
+    // Set paragraph
+    set par(justify: true)
+
+    // Display sender at top of page. If there's no sender
+    // add some hidden text to keep the same spacing.
+    align(center, {
+      text(9pt, if sender == none {
+        hide("a")
+      } else {
+        sender
+      })
+    })
+
+    v(10mm)
+
+    // Display date. If there's no date add some hidden
+    // text to keep the same spacing.
+    align(right, if date != none {
+      date
+    } else {
+      hide("a")
+    })
+
+    v(5mm)
+
+    // Display recipient.
+    recipient
+
+    v(5mm)
+
+    // Add the subject line, if any.
+    if subject != none {
+      pad(right: 10%, strong(subject))
+    }
+
+    // Add body and name.
+    body
+    v(5mm)
+    name
+  }
+
+
+
