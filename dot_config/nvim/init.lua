@@ -296,7 +296,8 @@ vim.lsp.config("lua_ls", {
 	},
 })
 
-require("lspconfig")["tinymist"].setup({
+-- require("lspconfig")["tinymist"].setup({
+vim.lsp.config("tinymist", {
 
 	-- settings = {
 	--   formatterMode = "typstyle",

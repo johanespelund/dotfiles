@@ -132,7 +132,10 @@ export RPPrefix10=~/codes/refprop10
 PATH="$PATH:$HOME/extension/adapter"
 PATH="$PATH:/opt/nvim-linux64/bin"
 PATH="$PATH:$HOME/.local/bin"
+PATH="$PATH:$HOME/bin"
+PATH="$PATH:$HOME/neovim/bin"
 
+export EDITOR='nvim'
 # source ~/.openai_kay.zsh
 
 source ~/.bash_aliases
