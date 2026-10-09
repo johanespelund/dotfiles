@@ -198,3 +198,13 @@ snippet ltmpl "Letter template" b
 
 
 
+
+snippet memo "SINTEF memo options (inside note.with)" b
+  memo: true,
+  project: "${1:project number}",
+  classification: "${2:internal}",
+  recipients: (
+    ("${3:name}", "${4:information}"),
+  ),
+  // lang: "nb",
+  // frontpage-break: true,

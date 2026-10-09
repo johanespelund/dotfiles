@@ -1,0 +1,10 @@
+#!/bin/sh
+# Wrapper used by vimtex (bin/ is put first on Neovim's PATH in init.lua).
+# Runs the real program on the X display of the tmux client you last typed in:
+# the laptop when working over `ssh -X` (with an X server on Windows), else the desk.
+if [ -n "$TMUX" ]; then
+	pid=$(tmux display-message -p '#{client_pid}' 2>/dev/null)
+	display=$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | sed -n 's/^DISPLAY=//p')
+	[ -n "$display" ] && export DISPLAY="$display"
+fi
+exec "/usr/bin/$(basename "$0")" "$@"
