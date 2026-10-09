@@ -127,8 +127,10 @@ vim.pack.add({
 
 -- Treesitter (main branch): parsers are built with the tree-sitter CLI (>= 0.26.1) and a C
 -- compiler; skip installing on machines without the CLI (highlighting falls back to regex)
-if vim.fn.executable("tree-sitter") == 1 then
-	require("nvim-treesitter").install({
+-- (pcall: a machine still on the old master branch has no install(); run vim.pack.update() there)
+local ts_ok, ts = pcall(require, "nvim-treesitter")
+if ts_ok and ts.install and vim.fn.executable("tree-sitter") == 1 then
+	ts.install({
 		"bash", "bibtex", "c", "cmake", "cpp", "csv", "diff", "foam", "fortran", "gitcommit",
 		"gitignore", "json", "lua", "make", "markdown", "python", "ssh_config", "toml", "typst",
 		"vim", "vimdoc",
@@ -152,6 +154,9 @@ require("mason-tool-installer").setup({
 		"lua_ls",
 		"stylua",
 		"harper_ls",
+		"tinymist",
+		"texlab",
+		"ltex-ls-plus",
 	},
 })
 vim.api.nvim_create_autocmd("FileType", {
