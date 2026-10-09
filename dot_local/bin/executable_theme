@@ -1,0 +1,36 @@
+#!/bin/sh
+# Switch tmux and every running Neovim between light and dark (Catppuccin latte/mocha).
+#   theme [toggle|light|dark]
+# The choice is kept in ~/.local/state/theme, which new tmux servers and Neovims read at startup.
+
+state="$HOME/.local/state/theme"
+current=$(cat "$state" 2>/dev/null || echo dark)
+case "${1:-toggle}" in
+light | dark) new=$1 ;;
+toggle) [ "$current" = light ] && new=dark || new=light ;;
+*)
+	echo "usage: theme [toggle|light|dark]" >&2
+	exit 1
+	;;
+esac
+mkdir -p "$(dirname "$state")"
+echo "$new" >"$state"
+
+# tmux: status bar via the catppuccin plugin; pane background so shells match Neovim
+catppuccin="$HOME/.tmux/plugins/catppuccin-tmux/catppuccin.tmux"
+if tmux has-session 2>/dev/null; then
+	if [ "$new" = light ]; then
+		tmux set -g @catppuccin_flavour latte \; set -g window-style "fg=#4c4f69,bg=#eff1f5"
+	else
+		tmux set -g @catppuccin_flavour mocha \; set -g window-style default
+	fi
+	[ -x "$catppuccin" ] && tmux run-shell "$catppuccin"
+fi
+
+# Neovim: every instance listens on a socket in its run dir (:h stdpath)
+for sock in "${XDG_RUNTIME_DIR:-/nonexistent}"/nvim.*.0 "${TMPDIR:-/tmp}/nvim.$USER"/*/nvim.*.0; do
+	[ -S "$sock" ] || continue
+	timeout 2 nvim --server "$sock" --remote-expr "execute('set background=$new')" >/dev/null 2>&1
+done
+
+echo "theme: $new"

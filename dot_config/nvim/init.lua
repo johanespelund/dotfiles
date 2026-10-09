@@ -316,7 +316,26 @@ cmp.setup({
 	}),
 })
 
+-- Light/dark is shared with tmux through ~/.local/state/theme, written by the `theme`
+-- script (~/.local/bin/theme). Without the file, Neovim keeps guessing from the terminal.
+local theme_file = io.open(vim.env.HOME .. "/.local/state/theme")
+if theme_file then
+	local theme = vim.trim(theme_file:read("*a"))
+	theme_file:close()
+	if theme == "light" or theme == "dark" then
+		vim.o.background = theme
+		-- Stop a late terminal colour reply from overriding the choice
+		for _, au in ipairs(vim.api.nvim_get_autocmds({ event = "TermResponse" })) do
+			if au.desc and au.desc:find("'background' automatically", 1, true) then
+				vim.api.nvim_del_autocmd(au.id)
+			end
+		end
+	end
+end
 vim.cmd("colorscheme catppuccin")
+vim.keymap.set("n", "<leader>tt", function()
+	vim.system({ vim.env.HOME .. "/.local/bin/theme", "toggle" })
+end, { desc = "Toggle light/dark (Neovim + tmux)" })
 
 vim.lsp.config("harper_ls", {
 	settings = {
