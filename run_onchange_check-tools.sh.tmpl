@@ -1,0 +1,79 @@
+{{- /*
+  Lists tools the configs expect that are missing or too old on this machine,
+  with the easiest way to install each one. Checked on `chezmoi apply`; the
+  script only reruns when its output changes (a tool is installed, updated
+  or goes missing). Renders to nothing, and so never runs, when all is well.
+*/ -}}
+
+{{- $todo := list -}}
+{{- $cargo := "" -}}
+{{- if not (lookPath "cargo") -}}
+{{-   $cargo = "\n      (cargo: curl -sSf https://sh.rustup.rs | sh, then open a new shell)" -}}
+{{- end -}}
+
+{{- /* Neovim: vimtex needs 0.12.4+. */ -}}
+{{- $nvimInstall := "mkdir -p ~/.local/opt ~/.local/bin && rm -rf ~/.local/opt/nvim-linux-x86_64 && curl -L https://github.com/neovim/neovim/releases/latest/download/nvim-linux-x86_64.tar.gz | tar xz -C ~/.local/opt && ln -sf ~/.local/opt/nvim-linux-x86_64/bin/nvim ~/.local/bin/nvim\n      (if an older nvim is left in /usr/bin, remove it: sudo apt remove neovim)" -}}
+{{- if not (lookPath "nvim") -}}
+{{-   $todo = append $todo (printf "nvim (0.12.4+):\n      %s" $nvimInstall) -}}
+{{- else -}}
+{{-   $v := output "nvim" "--version" | regexFind "[0-9]+\\.[0-9]+\\.[0-9]+" | default "0.0.0" -}}
+{{-   if not (semverCompare ">=0.12.4" $v) -}}
+{{-     $todo = append $todo (printf "nvim %s is too old (need 0.12.4+):\n      %s" $v $nvimInstall) -}}
+{{-   end -}}
+{{- end -}}
+
+{{- /* fzf: fzf-lua refuses to run below 0.36. Ubuntu 22.04's apt fzf is 0.29. */ -}}
+{{- $fzfInstall := "git clone --depth 1 https://github.com/junegunn/fzf.git ~/.fzf && ~/.fzf/install --key-bindings --completion --no-update-rc" -}}
+{{- if not (lookPath "fzf") -}}
+{{-   $todo = append $todo (printf "fzf (0.36+):\n      %s" $fzfInstall) -}}
+{{- else -}}
+{{-   $v := output "fzf" "--version" | regexFind "[0-9]+\\.[0-9]+(\\.[0-9]+)?" | default "0.0.0" -}}
+{{-   if not (semverCompare ">=0.36.0" $v) -}}
+{{-     $todo = append $todo (printf "fzf %s is too old (need 0.36+):\n      sudo apt remove fzf; %s" $v $fzfInstall) -}}
+{{-   end -}}
+{{- end -}}
+
+{{- /* tree-sitter CLI: nvim-treesitter (main) needs 0.26.1+, and not the npm one. */ -}}
+{{- $tsInstall := printf "cargo install --locked tree-sitter-cli --version 0.26.13 --root ~/.local%s" $cargo -}}
+{{- if not (lookPath "tree-sitter") -}}
+{{-   $todo = append $todo (printf "tree-sitter (0.26.1+, builds Neovim's parsers):\n      %s" $tsInstall) -}}
+{{- else -}}
+{{-   $v := output "tree-sitter" "--version" | regexFind "[0-9]+\\.[0-9]+\\.[0-9]+" | default "0.0.0" -}}
+{{-   if not (semverCompare ">=0.26.1" $v) -}}
+{{-     $todo = append $todo (printf "tree-sitter %s is too old (need 0.26.1+):\n      %s" $v $tsInstall) -}}
+{{-   end -}}
+{{- end -}}
+
+{{- /* Plain presence checks. */ -}}
+{{- if not (lookPath "rg") -}}
+{{-   $todo = append $todo "rg (ripgrep, used by the fzf-lua pickers):\n      sudo apt install ripgrep   (no sudo: cargo install --locked ripgrep --root ~/.local)" -}}
+{{- end -}}
+{{- if not (lookPath "unzip") -}}
+{{-   $todo = append $todo "unzip (Mason needs it to install LSPs):\n      sudo apt install unzip" -}}
+{{- end -}}
+{{- if not (lookPath "tmux") -}}
+{{-   $todo = append $todo "tmux:\n      sudo apt install tmux   (then: git clone https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm, and prefix + I in tmux)" -}}
+{{- end -}}
+{{- if not (lookPath "typst") -}}
+{{-   $todo = append $todo (printf "typst (notes):\n      cargo install --locked typst-cli --root ~/.local%s" $cargo) -}}
+{{- end -}}
+
+{{- /* Optional: only matter for LaTeX viewing. */ -}}
+{{- $opt := list -}}
+{{- range list "latexmk" "zathura" "xdotool" -}}
+{{-   if not (lookPath .) }}{{ $opt = append $opt . }}{{ end -}}
+{{- end -}}
+
+{{- if or $todo $opt -}}
+#!/bin/sh
+cat >&2 <<'EOF'
+chezmoi: tools missing or outdated on this machine
+{{- range $todo }}
+  - {{ . }}
+{{- end }}
+{{- if $opt }}
+  - optional, for LaTeX (vimtex): {{ join " " $opt }}
+      sudo apt install {{ join " " $opt | replace "latexmk" "latexmk texlive-full" }}
+{{- end }}
+EOF
+{{ end -}}
