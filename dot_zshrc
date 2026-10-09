@@ -134,6 +134,8 @@ PATH="$PATH:/opt/nvim-linux64/bin"
 PATH="$PATH:$HOME/.local/bin"
 PATH="$PATH:$HOME/bin"
 PATH="$PATH:$HOME/neovim/bin"
+# TeX Live 2026 (user install via install-tl), ahead of the distro's older TeX Live
+[ -d "$HOME/texlive/2026/bin/x86_64-linux" ] && PATH="$HOME/texlive/2026/bin/x86_64-linux:$PATH"
 
 export EDITOR='nvim'
 # source ~/.openai_kay.zsh
