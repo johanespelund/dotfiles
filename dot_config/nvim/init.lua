@@ -345,9 +345,69 @@ vim.lsp.config("harper_ls", {
 		},
 	},
 })
--- Grammar/spelling for LaTeX and Markdown (ltex-ls-plus via Mason, auto-enabled)
+-- Grammar/spelling for LaTeX (ltex-ls-plus via Mason, auto-enabled). Typst and Markdown
+-- are left to harper_ls, so a word isn't flagged twice.
+-- LTeX's "Add to dictionary", "Hide false positive" and "Disable rule" actions are
+-- client-side commands, handled here and saved in ltex.json. Words in harper's user
+-- dictionary are accepted too.
+local harper_dict = vim.fn.expand("~/.config/harper-ls/dictionary.txt")
+local ltex_file = vim.fn.stdpath("data") .. "/ltex.json"
+local function ltex_saved()
+	local ok, saved = pcall(function()
+		return vim.json.decode(table.concat(vim.fn.readfile(ltex_file), "\n"))
+	end)
+	return ok and type(saved) == "table" and saved or {}
+end
+local function ltex_settings()
+	local saved = ltex_saved()
+	local dictionary = vim.deepcopy(saved.dictionary or {})
+	local harper_words = vim.fn.filereadable(harper_dict) == 1 and vim.fn.readfile(harper_dict) or {}
+	for _, lang in ipairs({ "en-GB", "en-US" }) do
+		dictionary[lang] = vim.list_extend(dictionary[lang] or {}, harper_words)
+	end
+	return {
+		ltex = {
+			language = "en-GB",
+			dictionary = dictionary,
+			disabledRules = saved.disabledRules or vim.empty_dict(),
+			hiddenFalsePositives = saved.hiddenFalsePositives or vim.empty_dict(),
+		},
+	}
+end
+-- Command arguments look like { uri = ..., <key> = { [lang] = { items } } }
+local function ltex_command(field, key)
+	return function(command, ctx)
+		local saved = ltex_saved()
+		saved[field] = saved[field] or {}
+		for lang, items in pairs(command.arguments[1][key]) do
+			saved[field][lang] = saved[field][lang] or {}
+			for _, item in ipairs(items) do
+				if not vim.list_contains(saved[field][lang], item) then
+					table.insert(saved[field][lang], item)
+				end
+			end
+		end
+		vim.fn.writefile({ vim.json.encode(saved) }, ltex_file)
+		local client = vim.lsp.get_client_by_id(ctx.client_id)
+		if client then
+			client.settings = ltex_settings()
+			client:notify("workspace/didChangeConfiguration", { settings = client.settings })
+		end
+	end
+end
 vim.lsp.config("ltex_plus", {
+	filetypes = { "tex", "plaintex", "bib" },
 	settings = { ltex = { language = "en-GB" } },
+	-- Read the saved words when the server starts. Update the table in place:
+	-- the client already holds a reference to it.
+	before_init = function(_, config)
+		config.settings.ltex = ltex_settings().ltex
+	end,
+	commands = {
+		["_ltex.addToDictionary"] = ltex_command("dictionary", "words"),
+		["_ltex.hideFalsePositives"] = ltex_command("hiddenFalsePositives", "falsePositives"),
+		["_ltex.disableRules"] = ltex_command("disabledRules", "ruleIds"),
+	},
 })
 vim.lsp.enable({ "tinymist", "lua_ls" })
 
