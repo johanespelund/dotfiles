@@ -924,6 +924,28 @@ vim.keymap.set("n", "<leader>ng", function()
 	require("fzf-lua").live_grep({ cwd = "~/notes" })
 end, { desc = "Grep in notes" })
 vim.keymap.set("n", "<leader>tp", ":TypstPreview<CR>", { desc = "Typst preview" })
+
+-- Compile the current Typst file to a PDF next to it (~/notes ignores *.pdf in git).
+-- The git root is the project root, so imports like "/templates/note.typ" resolve.
+vim.api.nvim_create_user_command("TypstPdf", function()
+	local file = vim.api.nvim_buf_get_name(0)
+	if vim.bo.filetype ~= "typst" or file == "" then
+		return vim.notify("TypstPdf: not a Typst file", vim.log.levels.WARN)
+	end
+	vim.cmd("silent update")
+	local root = vim.fs.root(file, ".git") or vim.fs.dirname(file)
+	local pdf = file:gsub("%.typ$", "") .. ".pdf"
+	vim.system({ "typst", "compile", "--root", root, file, pdf }, { text = true }, function(out)
+		vim.schedule(function()
+			if out.code == 0 then
+				vim.notify("Typst: wrote " .. vim.fn.fnamemodify(pdf, ":~:."))
+			else
+				vim.notify("Typst compile failed:\n" .. out.stderr, vim.log.levels.ERROR)
+			end
+		end)
+	end)
+end, { desc = "Compile current Typst file to PDF" })
+vim.keymap.set("n", "<leader>tc", "<cmd>TypstPdf<CR>", { desc = "Typst compile to PDF" })
 vim.keymap.set("n", "<leader>cp", ":Copilot attach<CR>", { desc = "Copilot attach" })
 
 -- Reload LuaSnip:
