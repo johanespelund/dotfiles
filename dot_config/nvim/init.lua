@@ -157,6 +157,8 @@ require("mason-tool-installer").setup({
 		"tinymist",
 		"texlab",
 		"ltex-ls-plus",
+		"clangd",
+		"clang-format",
 	},
 })
 vim.api.nvim_create_autocmd("FileType", {
@@ -455,8 +457,17 @@ require("conform").setup({
 		lua = { "stylua" },
 		python = { "isort", "black" },
 		typst = { "typstyle" },
+		c = { "clang-format" },
+		cpp = { "clang-format" },
 	},
 })
+-- Projects with a .clang-format file use it; otherwise LLVM style with 4-space indents
+require("conform").formatters["clang-format"] = {
+	prepend_args = function(_, ctx)
+		local found = vim.fs.find({ ".clang-format", "_clang-format" }, { upward = true, path = ctx.dirname })
+		return #found == 0 and { "--style={BasedOnStyle: LLVM, IndentWidth: 4}" } or {}
+	end,
+}
 require("conform").formatters.typstyle = {
 	append_args = { "--wrap-text" },
 	-- The base args are { "-filename", "$FILENAME" } so the final args will be
@@ -466,6 +477,67 @@ require("conform").formatters.typstyle = {
 vim.keymap.set("n", "<leader>gd", "<cmd>lua vim.lsp.buf.definition()<CR>") -- Go to definition
 vim.keymap.set("n", "<leader>ca", "<cmd>lua vim.lsp.buf.code_action()<CR>") -- Code action
 vim.keymap.set("n", "<leader>fm", require("conform").format)
+
+-- C/C++: clangd (Mason) needs compile_commands.json for real projects:
+-- `bear -- make`, `bear -- wmake` (OpenFOAM) or cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+vim.api.nvim_create_autocmd("LspAttach", {
+	callback = function(args)
+		local client = vim.lsp.get_client_by_id(args.data.client_id)
+		if client and client.name == "clangd" then
+			vim.keymap.set("n", "<leader>ch", "<cmd>LspClangdSwitchSourceHeader<CR>",
+				{ buffer = args.buf, desc = "Switch source/header" })
+		end
+	end,
+})
+
+-- Debugging with gdb through the built-in Termdebug: `:Termdebug ./program` or <leader>bt.
+-- Build with -g -O0 (OpenFOAM: WM_COMPILE_OPTION=Debug). The <leader>b keys below exist
+-- only during a session; K shows the value under the cursor, + and - move up/down the stack.
+vim.cmd("packadd! termdebug") -- "!": loaded with the other plugins, not twice
+vim.g.termdebug_config = { variables_window = 1, variables_window_height = 12 }
+vim.keymap.set("n", "<leader>bt", function()
+	vim.ui.input({ prompt = "Debug program: ", completion = "file" }, function(prog)
+		if prog and prog ~= "" then
+			vim.cmd("Termdebug " .. prog)
+		end
+	end)
+end, { desc = "Debug: start gdb (Termdebug)" })
+local debug_keys = {
+	{ "<leader>bb", function()
+		local placed = vim.fn.sign_getplaced(vim.api.nvim_get_current_buf(),
+			{ group = "TermDebug", lnum = vim.fn.line(".") })[1].signs
+		for _, sign in ipairs(placed) do
+			if sign.name:match("^debugBreakpoint") then
+				return vim.cmd("Clear")
+			end
+		end
+		vim.cmd("Break")
+	end, "Toggle breakpoint" },
+	{ "<leader>br", "<cmd>Run<CR>", "Run" },
+	{ "<leader>bc", "<cmd>Continue<CR>", "Continue" },
+	{ "<leader>bn", "<cmd>Over<CR>", "Next line (step over)" },
+	{ "<leader>bs", "<cmd>Step<CR>", "Step into" },
+	{ "<leader>bf", "<cmd>Finish<CR>", "Finish function (step out)" },
+	{ "<leader>bu", "<cmd>Until<CR>", "Run until cursor line" },
+	{ "<leader>bx", "<cmd>Stop<CR>", "Interrupt program" },
+	{ "<leader>bg", "<cmd>Gdb<CR>", "Go to gdb window" },
+}
+vim.api.nvim_create_autocmd("User", {
+	pattern = "TermdebugStartPost",
+	callback = function()
+		for _, k in ipairs(debug_keys) do
+			vim.keymap.set("n", k[1], k[2], { desc = "Debug: " .. k[3] })
+		end
+	end,
+})
+vim.api.nvim_create_autocmd("User", {
+	pattern = "TermdebugStopPost",
+	callback = function()
+		for _, k in ipairs(debug_keys) do
+			pcall(vim.keymap.del, "n", k[1])
+		end
+	end,
+})
 
 -- Shortcut for sourcing nvim config:
 vim.keymap.set("n", "<leader>sv", ":source $MYVIMRC<CR>", { desc = "Source nvim config" })
