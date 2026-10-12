@@ -456,7 +456,7 @@ require("conform").setup({
 	formatters_by_ft = {
 		lua = { "stylua" },
 		python = { "isort", "black" },
-		typst = { "typstyle" },
+		typst = { "typstyle_wrap" },
 		c = { "clang-format" },
 		cpp = { "clang-format" },
 	},
@@ -468,10 +468,44 @@ require("conform").formatters["clang-format"] = {
 		return #found == 0 and { "--style={BasedOnStyle: LLVM, IndentWidth: 4}" } or {}
 	end,
 }
-require("conform").formatters.typstyle = {
-	append_args = { "--wrap-text" },
-	-- The base args are { "-filename", "$FILENAME" } so the final args will be
-	-- { "-filename", "$FILENAME", "-i", "2" }
+-- typstyle --wrap-text splits short inline calls such as #qty(22, "deg C") over several
+-- lines (typstyle issue #324, still in 0.15). While it wraps, each short one-line call
+-- is swapped for a placeholder word of the same length, then put back.
+require("conform").formatters.typstyle_wrap = {
+	format = function(_, _, lines, callback)
+		local calls = {}
+		-- Only calls inside running text: a call at the start of a line is left alone,
+		-- as a placeholder there would let typstyle join it onto the line above.
+		local src = table.concat(lines, "\n") .. "\n"
+		local text = src:gsub("()(#[%a_][%w_%-%.]*%b())", function(pos, call)
+			local id = ("TSPH%dQ"):format(#calls + 1)
+			local line_start = not src:sub(math.max(1, pos - 200), pos - 1):match("[^\n]*$"):find("%S")
+			if line_start or call:find("\n") or #call > 60 or #id > #call then
+				return nil
+			end
+			table.insert(calls, call)
+			return id .. ("q"):rep(#call - #id)
+		end)
+		vim.system({ "typstyle", "--wrap-text" }, { stdin = text, text = true }, function(out)
+			vim.schedule(function()
+				if out.code ~= 0 then
+					return callback(out.stderr ~= "" and out.stderr or "typstyle failed")
+				end
+				local result = out.stdout
+				for i, call in ipairs(calls) do
+					local id = ("TSPH%dQ"):format(i)
+					result = result:gsub(vim.pesc(id .. ("q"):rep(#call - #id)), function()
+						return call
+					end, 1)
+				end
+				local new = vim.split(result, "\n", { plain = true })
+				if new[#new] == "" then
+					table.remove(new)
+				end
+				callback(nil, new)
+			end)
+		end)
+	end,
 }
 
 vim.keymap.set("n", "<leader>gd", "<cmd>lua vim.lsp.buf.definition()<CR>") -- Go to definition
