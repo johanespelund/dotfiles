@@ -69,7 +69,7 @@ snippet elseart "Load elsearticle template" b
       ),
     ),
     // journal: "Name of the Journal",
-    // abstract: "Hello!",
+    // abstract: [Hello!],
     // keywords: ("keyword 1", "keyword 2"),
     format: "preprint",
     // line-numbering: true,
@@ -83,6 +83,7 @@ snippet note "Note" b
 
   #show: note.with(
     title: "${1:title}",
+    abstract: [${2}],
     )
 
 

@@ -536,6 +536,7 @@ vim.api.nvim_create_user_command("Note", function(opts)
 			"",
 			"#show: note.with(",
 			'  title: "' .. vim.fn.fnamemodify(name, ":t") .. '",',
+			"  abstract: [],",
 			")",
 			"",
 			"",
