@@ -159,6 +159,10 @@ require("mason-tool-installer").setup({
 		"ltex-ls-plus",
 		"clangd",
 		"clang-format",
+		"fortls",
+		"fortitude",
+		"fprettify",
+		"findent",
 	},
 })
 vim.api.nvim_create_autocmd("FileType", {
@@ -413,6 +417,19 @@ vim.lsp.config("ltex_plus", {
 })
 vim.lsp.enable({ "tinymist", "lua_ls" })
 
+-- Fortran: fortls (enabled by mason-lspconfig) for completion, hover, go-to and
+-- diagnostics; fortitude's server for lint warnings. Rules: fortitude.toml / fpm.toml.
+vim.lsp.config("fortitude", {
+	cmd = { "fortitude", "server" },
+	filetypes = { "fortran" },
+	root_markers = { "fortitude.toml", ".fortitude.toml", "fpm.toml", ".git" },
+})
+vim.lsp.enable("fortitude")
+-- lspconfig's defaults minus --notify_init (an "initialization complete" message per file)
+vim.lsp.config("fortls", {
+	cmd = { "fortls", "--hover_signature", "--hover_language=fortran", "--use_signature_help" },
+})
+
 vim.lsp.config("lua_ls", {
 	settings = {
 		Lua = {
@@ -459,6 +476,7 @@ require("conform").setup({
 		typst = { "typstyle_wrap" },
 		c = { "clang-format" },
 		cpp = { "clang-format" },
+		fortran = { "fprettify", "findent", stop_after_first = true },
 	},
 })
 -- Projects with a .clang-format file use it; otherwise LLVM style with 4-space indents
@@ -466,6 +484,19 @@ require("conform").formatters["clang-format"] = {
 	prepend_args = function(_, ctx)
 		local found = vim.fs.find({ ".clang-format", "_clang-format" }, { upward = true, path = ctx.dirname })
 		return #found == 0 and { "--style={BasedOnStyle: LLVM, IndentWidth: 4}" } or {}
+	end,
+}
+-- Fortran: fprettify for free form (.f90 etc.), findent (indentation only) for fixed
+-- form (.f, .for). fprettify reads .fprettify.rc from the project or ~; without one,
+-- indent by 2 like FluTAS. Existing code bases often differ, so format a visual
+-- selection (<leader>fm) to touch only new code.
+require("conform").formatters.fprettify = {
+	condition = function(_, ctx)
+		return not (ctx.filename:lower():match("%.f$") or ctx.filename:lower():match("%.for$"))
+	end,
+	prepend_args = function(_, ctx)
+		local found = vim.fs.find(".fprettify.rc", { upward = true, path = ctx.dirname })
+		return #found == 0 and { "--indent", "2" } or {}
 	end,
 }
 -- typstyle --wrap-text splits short inline calls such as #qty(22, "deg C") over several
@@ -510,7 +541,7 @@ require("conform").formatters.typstyle_wrap = {
 
 vim.keymap.set("n", "<leader>gd", "<cmd>lua vim.lsp.buf.definition()<CR>") -- Go to definition
 vim.keymap.set("n", "<leader>ca", "<cmd>lua vim.lsp.buf.code_action()<CR>") -- Code action
-vim.keymap.set("n", "<leader>fm", require("conform").format)
+vim.keymap.set({ "n", "x" }, "<leader>fm", require("conform").format, { desc = "Format (selection in visual mode)" })
 
 -- C/C++: clangd (Mason) needs compile_commands.json for real projects:
 -- `bear -- make`, `bear -- wmake` (OpenFOAM) or cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
