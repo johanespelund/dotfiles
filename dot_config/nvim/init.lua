@@ -107,7 +107,6 @@ vim.pack.add({
 	{ src = "https://github.com/mason-org/mason.nvim" },
 	{ src = "https://github.com/mason-org/mason-lspconfig.nvim" },
 	{ src = "https://github.com/WhoIsSethDaniel/mason-tool-installer.nvim" },
-	{ src = "https://github.com/zbirenbaum/copilot.lua" },
 	{ src = "https://github.com/christoomey/vim-tmux-navigator" },
 	{ src = "https://github.com/machakann/vim-sandwich" },
 	{ src = "https://github.com/windwp/nvim-autopairs" },
@@ -174,11 +173,6 @@ vim.api.nvim_create_autocmd("FileType", {
 	callback = function()
 		vim.bo.commentstring = "// %s"
 	end,
-})
-
-require("copilot").setup({
-	suggestion = { enabled = false },
-	panel = { enabled = false },
 })
 
 require("nvim-autopairs").setup()
@@ -991,68 +985,11 @@ vim.api.nvim_create_user_command("NotePaste", function(opts)
 	require("luasnip").lsp_expand(body)
 end, { nargs = "?" })
 
--- NOTE WEEKLY
-vim.api.nvim_create_user_command("NoteWeekly", function()
-	local notes_dir = vim.fn.expand("~/notes")
-	local weekly_dir = notes_dir .. "/weekly"
-	vim.fn.mkdir(weekly_dir, "p")
-
-	-- get current ISO week number + year
-	local week = os.date("%G-W%V") -- e.g. 2025-W35
-
-	-- get monday of this week (ISO)
-	local now = os.time()
-	local weekday = tonumber(os.date("%u", now)) -- 1=Mon..7=Sun
-	local monday = now - (weekday - 1) * 24 * 3600
-	local sunday = monday + 6 * 24 * 3600
-
-	local start_str = os.date("%d.%m.%Y", monday)
-	local end_str = os.date("%d.%m.%Y", sunday)
-
-	local filename = weekly_dir .. "/" .. week .. ".typ"
-
-	require("typst-preview").setup({
-		-- other options...
-		get_root = function(path_of_main_file)
-			local notes_root = os.getenv("HOME") .. "/notes"
-			local filepath = vim.fn.fnamemodify(path_of_main_file, ":p")
-
-			-- check if file is inside ~/notes
-			if filepath:sub(1, #notes_root) == notes_root then
-				print(notes_root)
-				return notes_root
-			end
-
-			-- fallback to file's directory
-			return vim.fn.fnamemodify(path_of_main_file, ":p:h")
-		end,
-
-		get_main_file = function(path_of_buffer)
-			return path_of_buffer
-		end,
-	})
-
-	if vim.fn.filereadable(filename) == 0 then
-		local lines = {
-			'#import "../templates/weekly.typ": weekly',
-			"#show: weekly.with(",
-			"  title: [Weekly Notes: " .. week .. "],",
-			"  span: [" .. start_str .. " - " .. end_str .. "],",
-			")",
-			"",
-		}
-		vim.fn.writefile(lines, filename)
-	end
-
-	vim.cmd("edit " .. filename)
-end, {})
-
 -- KEYMAPS
 vim.keymap.set("n", "<leader>nn", ":Note ", { desc = "New note" })
 vim.keymap.set("n", "<leader>ns", ":NoteSync<CR>", { desc = "Sync notes" })
 vim.keymap.set("n", "<leader>ni", ":NoteImg<CR>", { desc = "Fix note images" })
 vim.keymap.set("n", "<leader>np", ":NotePaste<CR>", { desc = "Paste clipboard image into note" })
-vim.keymap.set("n", "<leader>nw", ":NoteWeekly<CR>", { desc = "Weekly note" })
 
 -- NOTE SEARCH (fzf-lua: type to filter, <CR> opens the top match)
 require("fzf-lua").setup({})
@@ -1085,7 +1022,6 @@ vim.api.nvim_create_user_command("TypstPdf", function()
 	end)
 end, { desc = "Compile current Typst file to PDF" })
 vim.keymap.set("n", "<leader>tc", "<cmd>TypstPdf<CR>", { desc = "Typst compile to PDF" })
-vim.keymap.set("n", "<leader>cp", ":Copilot attach<CR>", { desc = "Copilot attach" })
 
 -- Reload LuaSnip:
 vim.keymap.set(
