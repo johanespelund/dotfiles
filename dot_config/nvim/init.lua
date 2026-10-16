@@ -123,6 +123,8 @@ vim.pack.add({
 	{ src = "https://github.com/stevearc/conform.nvim" },
 	{ src = "https://github.com/ibhagwan/fzf-lua" },
 	{ src = "https://github.com/lervag/vimtex" },
+	{ src = "https://github.com/mfussenegger/nvim-dap" },
+	{ src = "https://github.com/igorlfs/nvim-dap-view" },
 })
 
 -- Treesitter (main branch): parsers are built with the tree-sitter CLI (>= 0.26.1) and a C
@@ -163,6 +165,8 @@ require("mason-tool-installer").setup({
 		"fortitude",
 		"fprettify",
 		"findent",
+		"codelldb",
+		"debugpy",
 	},
 })
 vim.api.nvim_create_autocmd("FileType", {
@@ -603,55 +607,110 @@ vim.api.nvim_create_autocmd("LspAttach", {
 	end,
 })
 
--- Debugging with gdb through the built-in Termdebug: <leader>bt, or `:TermdebugCommand ./program args`.
--- Build with -g -O0 (OpenFOAM: WM_COMPILE_OPTION=Debug). The <leader>b keys below exist
--- only during a session; K shows the value under the cursor, + and - move up/down the stack.
-vim.cmd("packadd! termdebug") -- "!": loaded with the other plugins, not twice
-vim.g.termdebug_config = { variables_window = 1, variables_window_height = 12 }
-vim.keymap.set("n", "<leader>bt", function()
-	-- "./main input.txt -v": everything after the program goes to it as arguments
-	vim.ui.input({ prompt = "Debug program [args]: ", completion = "file" }, function(cmd)
-		if cmd and cmd ~= "" then
-			vim.cmd("TermdebugCommand " .. cmd)
+-- Debugging (DAP): nvim-dap + nvim-dap-view. C/C++ through codelldb (Mason; gdb 12 has no
+-- DAP mode), Python through debugpy (Mason). Build C/C++ with -g -O0 (OpenFOAM:
+-- WM_COMPILE_OPTION=Debug). <leader>bt asks for the program and its arguments (C/C++) or
+-- the arguments (Python, runs the current file); <leader>br reruns with the same.
+local dap = require("dap")
+local mason_bin = vim.fn.stdpath("data") .. "/mason/bin/"
+dap.adapters.codelldb = { type = "executable", command = mason_bin .. "codelldb" }
+dap.adapters.python = {
+	type = "executable",
+	command = vim.fn.stdpath("data") .. "/mason/packages/debugpy/venv/bin/python",
+	args = { "-m", "debugpy.adapter" },
+}
+
+-- Split a command line like a shell would, keeping "quoted words" together
+local function split_args(line)
+	local args, i = {}, 1
+	while i <= #line do
+		local s, e, q = line:find('^%s*"([^"]*)"', i)
+		if not s then
+			s, e, q = line:find("^%s*'([^']*)'", i)
+		end
+		if not s then
+			s, e, q = line:find("^%s*(%S+)", i)
+		end
+		if not s then
+			break
+		end
+		table.insert(args, q)
+		i = e + 1
+	end
+	return args
+end
+
+local last_cmd = {} -- per filetype, offered again at the next prompt
+local function debug_start()
+	local ft = vim.bo.filetype
+	if ft == "python" then
+		local file = vim.api.nvim_buf_get_name(0)
+		vim.ui.input({ prompt = "Arguments for " .. vim.fn.fnamemodify(file, ":t") .. ": ", default = last_cmd.python }, function(line)
+			if not line then
+				return
+			end
+			last_cmd.python = line
+			local python = vim.env.VIRTUAL_ENV and (vim.env.VIRTUAL_ENV .. "/bin/python") or vim.fn.exepath("python3")
+			dap.run({ type = "python", request = "launch", name = "Debug file", program = file, args = split_args(line),
+				cwd = vim.fn.getcwd(), console = "integratedTerminal", pythonPath = python, justMyCode = false })
+		end)
+	elseif ft == "c" or ft == "cpp" then
+		vim.ui.input({ prompt = "Debug program [args]: ", default = last_cmd.c or "./", completion = "file" }, function(line)
+			local args = line and split_args(line) or {}
+			if #args == 0 then
+				return
+			end
+			last_cmd.c = line
+			local program = vim.fn.fnamemodify(table.remove(args, 1), ":p")
+			dap.run({ type = "codelldb", request = "launch", name = "Debug " .. vim.fn.fnamemodify(program, ":t"),
+				program = program, args = args, cwd = vim.fn.getcwd(), stopOnEntry = false })
+		end)
+	else
+		dap.continue() -- other filetypes: whatever dap.configurations offers
+	end
+end
+
+vim.fn.sign_define("DapBreakpoint", { text = "●", texthl = "DiagnosticError" })
+vim.fn.sign_define("DapBreakpointCondition", { text = "◆", texthl = "DiagnosticWarn" })
+vim.fn.sign_define("DapLogPoint", { text = "◉", texthl = "DiagnosticInfo" })
+vim.fn.sign_define("DapBreakpointRejected", { text = "○", texthl = "DiagnosticHint" })
+vim.fn.sign_define("DapStopped", { text = "→", texthl = "DiagnosticOk", linehl = "Visual" })
+
+-- One panel at the bottom (variables, watches, stack, breakpoints, REPL; program output on
+-- its left), opened when a session starts and closed when it ends
+require("dap-view").setup({
+	auto_toggle = true,
+	winbar = {
+		sections = { "scopes", "watches", "threads", "breakpoints", "exceptions", "repl" },
+		default_section = "scopes",
+	},
+})
+
+local function map(lhs, rhs, desc, mode)
+	vim.keymap.set(mode or "n", lhs, rhs, { desc = "Debug: " .. desc })
+end
+map("<leader>bt", debug_start, "start (asks for program/arguments)")
+map("<leader>br", dap.run_last, "rerun with the same program and arguments")
+map("<leader>bb", dap.toggle_breakpoint, "toggle breakpoint")
+map("<leader>bB", function()
+	vim.ui.input({ prompt = "Break if: " }, function(cond)
+		if cond and cond ~= "" then
+			dap.set_breakpoint(cond)
 		end
 	end)
-end, { desc = "Debug: start gdb (Termdebug)" })
-local debug_keys = {
-	{ "<leader>bb", function()
-		local placed = vim.fn.sign_getplaced(vim.api.nvim_get_current_buf(),
-			{ group = "TermDebug", lnum = vim.fn.line(".") })[1].signs
-		for _, sign in ipairs(placed) do
-			if sign.name:match("^debugBreakpoint") then
-				return vim.cmd("Clear")
-			end
-		end
-		vim.cmd("Break")
-	end, "Toggle breakpoint" },
-	{ "<leader>br", "<cmd>Run<CR>", "Run" },
-	{ "<leader>bc", "<cmd>Continue<CR>", "Continue" },
-	{ "<leader>bn", "<cmd>Over<CR>", "Next line (step over)" },
-	{ "<leader>bs", "<cmd>Step<CR>", "Step into" },
-	{ "<leader>bf", "<cmd>Finish<CR>", "Finish function (step out)" },
-	{ "<leader>bu", "<cmd>Until<CR>", "Run until cursor line" },
-	{ "<leader>bx", "<cmd>Stop<CR>", "Interrupt program" },
-	{ "<leader>bg", "<cmd>Gdb<CR>", "Go to gdb window" },
-}
-vim.api.nvim_create_autocmd("User", {
-	pattern = "TermdebugStartPost",
-	callback = function()
-		for _, k in ipairs(debug_keys) do
-			vim.keymap.set("n", k[1], k[2], { desc = "Debug: " .. k[3] })
-		end
-	end,
-})
-vim.api.nvim_create_autocmd("User", {
-	pattern = "TermdebugStopPost",
-	callback = function()
-		for _, k in ipairs(debug_keys) do
-			pcall(vim.keymap.del, "n", k[1])
-		end
-	end,
-})
+end, "conditional breakpoint")
+map("<leader>bc", dap.continue, "continue")
+map("<leader>bn", dap.step_over, "next line (step over)")
+map("<leader>bs", dap.step_into, "step into")
+map("<leader>bf", dap.step_out, "finish function (step out)")
+map("<leader>bu", dap.run_to_cursor, "run until cursor line")
+map("<leader>bx", dap.pause, "interrupt program")
+map("<leader>bq", dap.terminate, "stop debugging")
+map("<leader>bk", function() require("dap-view").hover() end, "value under cursor (or selection)", { "n", "x" })
+map("<leader>bw", "<cmd>DapViewWatch<CR>", "watch expression under cursor", { "n", "x" })
+map("<leader>bv", "<cmd>DapViewToggle<CR>", "toggle debug panel")
+map("<leader>bj", dap.down, "down the call stack")
+map("<leader>bh", dap.up, "up the call stack")
 
 -- Shortcut for sourcing nvim config:
 vim.keymap.set("n", "<leader>sv", ":source $MYVIMRC<CR>", { desc = "Source nvim config" })
