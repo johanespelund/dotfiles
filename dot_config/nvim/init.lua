@@ -603,15 +603,16 @@ vim.api.nvim_create_autocmd("LspAttach", {
 	end,
 })
 
--- Debugging with gdb through the built-in Termdebug: `:Termdebug ./program` or <leader>bt.
+-- Debugging with gdb through the built-in Termdebug: <leader>bt, or `:TermdebugCommand ./program args`.
 -- Build with -g -O0 (OpenFOAM: WM_COMPILE_OPTION=Debug). The <leader>b keys below exist
 -- only during a session; K shows the value under the cursor, + and - move up/down the stack.
 vim.cmd("packadd! termdebug") -- "!": loaded with the other plugins, not twice
 vim.g.termdebug_config = { variables_window = 1, variables_window_height = 12 }
 vim.keymap.set("n", "<leader>bt", function()
-	vim.ui.input({ prompt = "Debug program: ", completion = "file" }, function(prog)
-		if prog and prog ~= "" then
-			vim.cmd("Termdebug " .. prog)
+	-- "./main input.txt -v": everything after the program goes to it as arguments
+	vim.ui.input({ prompt = "Debug program [args]: ", completion = "file" }, function(cmd)
+		if cmd and cmd ~= "" then
+			vim.cmd("TermdebugCommand " .. cmd)
 		end
 	end)
 end, { desc = "Debug: start gdb (Termdebug)" })
