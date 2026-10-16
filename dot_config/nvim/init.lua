@@ -236,15 +236,63 @@ local function attached_over_ssh()
 	return vim.env.SSH_CONNECTION ~= nil
 end
 
--- Clipboard: always xclip (desk clipboard); when attached over SSH, also send yanks via
--- OSC 52 so they reach Windows Terminal on the laptop (tmux forwards it, set-clipboard on).
--- Pasting stays on xclip: Windows Terminal doesn't answer OSC 52 paste requests.
+-- The desk's X display, looked up on each use: Neovim's own $DISPLAY goes stale when it
+-- was started in a pane created over `ssh -X` (localhost:10.0, gone after logout).
+-- Prefer a tmux client that is not over SSH; else a local ":N" display tmux or we know.
+local function desk_display()
+	local function env_of(pid)
+		local f = io.open("/proc/" .. pid .. "/environ", "rb")
+		if not f then
+			return {}
+		end
+		local env = {}
+		for k, v in f:read("*a"):gmatch("([^%z=]+)=([^%z]*)") do
+			env[k] = v
+		end
+		f:close()
+		return env
+	end
+	local function is_local(d)
+		return d and d:match("^:") and d or nil
+	end
+	if vim.env.TMUX then
+		for _, pid in ipairs(vim.fn.systemlist({ "tmux", "list-clients", "-F", "#{client_pid}" })) do
+			local env = env_of(pid)
+			if env.DISPLAY and not env.SSH_CONNECTION then
+				return env.DISPLAY
+			end
+		end
+		local session = vim.fn.system({ "tmux", "show-environment", "DISPLAY" }):match("^DISPLAY=(%S+)")
+		if is_local(session) then
+			return session
+		end
+	end
+	return is_local(vim.env.DISPLAY)
+end
+
+-- Clipboard: always xclip on the desk display (desk clipboard); when attached over SSH,
+-- also send yanks via OSC 52 so they reach Windows Terminal on the laptop (tmux forwards
+-- it, set-clipboard on). Pasting stays on xclip: Windows Terminal doesn't answer OSC 52
+-- paste requests.
 local clip_cache = {}
+local function xclip(args, lines)
+	local display = desk_display()
+	if not display then
+		return nil
+	end
+	local opts = { env = { DISPLAY = display } }
+	if lines then
+		-- Copy: xclip forks a child that keeps owning the selection, so don't hold its output
+		opts.stdin, opts.stdout, opts.stderr = table.concat(lines, "\n"), false, false
+	end
+	local out = vim.system(vim.list_extend({ "xclip" }, args), opts):wait(2000)
+	return out.code == 0 and (out.stdout or "") or nil
+end
 local function clip_copy(reg)
 	local sel = reg == "+" and "clipboard" or "primary"
 	return function(lines, regtype)
 		clip_cache[reg] = { lines, regtype }
-		vim.fn.system({ "xclip", "-i", "-selection", sel }, lines)
+		xclip({ "-i", "-selection", sel }, lines)
 		if attached_over_ssh() then
 			require("vim.ui.clipboard.osc52").copy(reg)(lines)
 		end
@@ -253,9 +301,9 @@ end
 local function clip_paste(reg)
 	local sel = reg == "+" and "clipboard" or "primary"
 	return function()
-		local out = vim.fn.system({ "xclip", "-o", "-selection", sel })
-		if vim.v.shell_error ~= 0 then
-			-- No X display (plain SSH without tmux): fall back to our own last yank
+		local out = xclip({ "-o", "-selection", sel })
+		if not out then
+			-- No desk display (plain SSH without tmux): fall back to our own last yank
 			return clip_cache[reg] or {}
 		end
 		-- Split ourselves (not systemlist) so a trailing "" survives: linewise yanks arrive as

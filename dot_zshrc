@@ -124,6 +124,23 @@ export RPPrefix9=~/codes/refprop91
 export RPPrefix10=~/codes/refprop10
 # export DISPLAY=:0
 
+# In tmux, refresh DISPLAY before each command from the client you are typing in
+# (as ~/.config/nvim/bin/zathura does). Panes created over `ssh -X` otherwise keep
+# its forwarded display (localhost:10.0) after logout, breaking xclip and GUI apps
+# back at the desk. A client without DISPLAY (plain ssh) leaves it unchanged.
+if [[ -n $TMUX ]]; then
+  _tmux_sync_display() {
+    local pid env
+    pid=$(tmux display-message -p '#{client_pid}' 2>/dev/null) || return
+    [[ -r /proc/$pid/environ ]] || return
+    env=(${(0)"$(</proc/$pid/environ)"})
+    env=${env[(r)DISPLAY=*]}
+    [[ -n $env ]] && export DISPLAY=${env#DISPLAY=}
+  }
+  autoload -Uz add-zsh-hook
+  add-zsh-hook preexec _tmux_sync_display
+fi
+
 
 
 # To customize prompt, run `p10k configure` or edit ~/.p10k.zsh.
