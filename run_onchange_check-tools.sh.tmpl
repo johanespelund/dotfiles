@@ -54,8 +54,32 @@
 {{- if not (lookPath "tmux") -}}
 {{-   $todo = append $todo "tmux:\n      sudo apt install tmux   (then: git clone https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm, and prefix + I in tmux)" -}}
 {{- end -}}
+
+{{- /* Typst: the notes template is tested with 0.15 (packages need 0.13.1+). The prebuilt
+       binary avoids needing a recent Rust. The live preview doesn't use this binary but
+       Mason's tinymist, which has its own Typst, so check that too. */ -}}
+{{- $typstInstall := "mkdir -p ~/.local/opt ~/.local/bin && curl -L https://github.com/typst/typst/releases/download/v0.15.1/typst-x86_64-unknown-linux-musl.tar.xz | tar xJ -C ~/.local/opt && ln -sf ~/.local/opt/typst-x86_64-unknown-linux-musl/typst ~/.local/bin/typst" -}}
 {{- if not (lookPath "typst") -}}
-{{-   $todo = append $todo (printf "typst (notes):\n      cargo install --locked typst-cli --root ~/.local%s" $cargo) -}}
+{{-   $todo = append $todo (printf "typst (0.15+, notes; :TypstPdf):\n      %s" $typstInstall) -}}
+{{- else -}}
+{{-   $v := output "typst" "--version" | regexFind "[0-9]+\\.[0-9]+\\.[0-9]+" | default "0.0.0" -}}
+{{-   if not (semverCompare ">=0.15.0" $v) -}}
+{{-     $todo = append $todo (printf "typst %s is too old (need 0.15+):\n      %s" $v $typstInstall) -}}
+{{-   end -}}
+{{- end -}}
+{{- $tinymist := joinPath .chezmoi.homeDir ".local/share/nvim/mason/bin/tinymist" -}}
+{{- if stat $tinymist -}}
+{{-   $v := output $tinymist "--version" | regexFind "Typst Version:\\s*[0-9.]+" | regexFind "[0-9]+\\.[0-9]+\\.[0-9]+" | default "0.0.0" -}}
+{{-   if not (semverCompare ">=0.15.0" $v) -}}
+{{-     $todo = append $todo (printf "tinymist (Typst LSP + preview, Mason) has Typst %s, need 0.15+:\n      in Neovim: :MasonUpdate, then :Mason and press U (updates all packages)" $v) -}}
+{{-   end -}}
+{{- end -}}
+
+{{- /* Notes: ~/notes/PhD.bib links to ~/PhD.bib (Zotero export). The template always
+       loads it, so without it no note compiles (grey preview). */ -}}
+{{- $bib := joinPath .chezmoi.homeDir "notes/PhD.bib" -}}
+{{- if and (lstat $bib) (not (stat $bib)) -}}
+{{-   $todo = append $todo "~/notes/PhD.bib links to ~/PhD.bib, which is missing here, so notes don't compile:\n      copy the Zotero export to ~/PhD.bib (e.g. scp desk:PhD.bib ~/)" -}}
 {{- end -}}
 
 {{- /* Optional: only matter for LaTeX viewing. */ -}}
