@@ -926,10 +926,48 @@ vim.api.nvim_create_user_command("NoteImg", function()
 	end
 end, {})
 
+-- WSL: read the image from the Windows clipboard itself (WSL's X/Wayland clipboard
+-- bridge doesn't offer screenshots as image/png). PowerShell saves it as PNG in the
+-- Windows temp folder and prints the path; returns the PNG bytes, or nil.
+local function wsl_clipboard_png()
+	local script = [[
+Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+$out = Join-Path $env:TEMP 'nvim-notepaste.png'
+$img = [System.Windows.Forms.Clipboard]::GetImage()
+if ($img) {
+	$img.Save($out, [System.Drawing.Imaging.ImageFormat]::Png)
+} else {
+	$png = [System.Windows.Forms.Clipboard]::GetData('PNG')
+	if (-not $png) { exit 1 }
+	$f = [System.IO.File]::Create($out); $png.CopyTo($f); $f.Close()
+}
+Write-Output $out]]
+	local res = vim.system({ "powershell.exe", "-NoProfile", "-NonInteractive", "-Sta", "-Command", script },
+		{ text = true }):wait()
+	if res.code ~= 0 then
+		return nil
+	end
+	local file = vim.trim(vim.fn.system({ "wslpath", "-u", vim.trim(res.stdout) }))
+	local f = io.open(file, "rb")
+	if not f then
+		return nil
+	end
+	local data = f:read("*a")
+	f:close()
+	os.remove(file)
+	return data ~= "" and data or nil
+end
+
 -- NOTE PASTE IMAGE (clipboard image -> ~/notes/images/<date>/, inserts a figure)
 vim.api.nvim_create_user_command("NotePaste", function(opts)
-	local paste_cmd
-	if vim.fn.executable("wl-paste") == 1 and os.getenv("WAYLAND_DISPLAY") then
+	local paste_cmd, image
+	if vim.fn.has("wsl") == 1 then
+		image = wsl_clipboard_png()
+		if not image then
+			vim.notify("No image in the Windows clipboard", vim.log.levels.ERROR)
+			return
+		end
+	elseif vim.fn.executable("wl-paste") == 1 and os.getenv("WAYLAND_DISPLAY") then
 		paste_cmd = { "wl-paste", "--type", "image/png" }
 	elseif vim.fn.executable("xclip") == 1 then
 		local targets = vim.fn.system({ "xclip", "-selection", "clipboard", "-t", "TARGETS", "-o" })
@@ -961,13 +999,16 @@ vim.api.nvim_create_user_command("NotePaste", function(opts)
 	end
 	local path = dir .. "/" .. file
 
-	local data = vim.system(paste_cmd):wait()
-	if data.code ~= 0 or data.stdout == "" then
-		vim.notify("Could not read image from clipboard", vim.log.levels.ERROR)
-		return
+	if not image then
+		local data = vim.system(paste_cmd):wait()
+		if data.code ~= 0 or data.stdout == "" then
+			vim.notify("Could not read image from clipboard", vim.log.levels.ERROR)
+			return
+		end
+		image = data.stdout
 	end
 	local f = assert(io.open(path, "wb"))
-	f:write(data.stdout)
+	f:write(image)
 	f:close()
 
 	shrink_image(path)
