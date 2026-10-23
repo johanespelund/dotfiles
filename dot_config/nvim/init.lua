@@ -212,8 +212,10 @@ require("typst-preview").setup({
 	dependencies_bin = dependencies_bin,
 	-- debug = true,
 	open_cmd = open_cmd,
-	-- Fixed port so it can be forwarded over SSH (the plugin tries port + 1 if busy)
-	port = 23625,
+	-- Fixed port on the desk so the laptop's SSH LocalForward reaches it (the plugin tries
+	-- port + 1 if busy). WSL gets a random one: on the laptop, 127.0.0.1:23625 is that
+	-- forward, so Windows' Firefox would reach the desk instead of WSL (empty page).
+	port = is_wsl() and 0 or 23625,
 })
 
 -- Typst preview over SSH: show the URL instead of opening Firefox on this machine.
