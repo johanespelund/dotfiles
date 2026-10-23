@@ -75,11 +75,12 @@
 {{-   end -}}
 {{- end -}}
 
-{{- /* Notes: ~/notes/PhD.bib links to ~/PhD.bib (Zotero export). The template always
-       loads it, so without it no note compiles (grey preview). */ -}}
+{{- /* Notes: the template always loads ~/notes/PhD.bib, a copy of the desk's Zotero
+       export kept current by :NoteSync. An old checkout may still have it as a link to
+       ~/PhD.bib; dangling, no note compiles (grey preview). */ -}}
 {{- $bib := joinPath .chezmoi.homeDir "notes/PhD.bib" -}}
 {{- if and (lstat $bib) (not (stat $bib)) -}}
-{{-   $todo = append $todo "~/notes/PhD.bib links to ~/PhD.bib, which is missing here, so notes don't compile:\n      copy the Zotero export to ~/PhD.bib (e.g. scp desk:PhD.bib ~/)" -}}
+{{-   $todo = append $todo "~/notes/PhD.bib is a broken link, so notes don't compile:\n      run :NoteSync (<leader>ns) on the desk, then here (it replaces the link with a copy)" -}}
 {{- end -}}
 
 {{- /* Optional: only matter for LaTeX viewing. */ -}}

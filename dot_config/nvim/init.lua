@@ -801,7 +801,31 @@ end, {
 	end,
 })
 
--- NOTE SYNC (save, commit, then pull --rebase and push)
+-- The notes template loads /PhD.bib. The repo keeps a real copy of ~/PhD.bib (the Zotero
+-- export on the desk), so machines without the export still compile notes. Refreshed on
+-- sync when ~/PhD.bib is newer and different; a stale ~/PhD.bib never overwrites it.
+local function refresh_bib(repo)
+	local src, dst = vim.fn.expand("~/PhD.bib"), repo .. "/PhD.bib"
+	local s_stat, d_stat = vim.uv.fs_stat(src), vim.uv.fs_lstat(dst)
+	if not s_stat then
+		return
+	end
+	if d_stat and d_stat.type == "link" then
+		os.remove(dst) -- the old symlink: copying onto it would write through to ~/PhD.bib
+		d_stat = nil
+	end
+	if d_stat then
+		if s_stat.mtime.sec <= d_stat.mtime.sec then
+			return
+		end
+		if s_stat.size == d_stat.size and vim.fn.readblob(src) == vim.fn.readblob(dst) then
+			return
+		end
+	end
+	vim.uv.fs_copyfile(src, dst)
+end
+
+-- NOTE SYNC (save, refresh PhD.bib, commit, then pull --rebase and push)
 vim.api.nvim_create_user_command("NoteSync", function()
 	local repo = vim.fn.expand("~/notes")
 
@@ -823,6 +847,8 @@ vim.api.nvim_create_user_command("NoteSync", function()
 			end)
 		end
 	end
+
+	refresh_bib(repo)
 
 	if not run({ "add", "-A" }) then
 		return
