@@ -87,6 +87,19 @@ snippet note "Note" b
     )
 
 
+snippet book "Book-style note (A5, 1940-70s)" b
+  #import "@preview/unify:0.7.1": num,qty,numrange,qtyrange
+  #import "@preview/physica:0.9.5": *
+  #import "/templates/book.typ": book
+
+  #show: book.with(
+    title: "${1:title}",
+    abstract: [${2}],
+    // short-title: [], title-page: true, aged: true, lang: "nb",
+    )
+
+  $0
+
 snippet pb "Page break" b
   #pagebreak(weak: true)
 

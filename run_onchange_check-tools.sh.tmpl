@@ -83,6 +83,12 @@
 {{-   $todo = append $todo "~/notes/PhD.bib is a broken link, so notes don't compile:\n      run :NoteSync (<leader>ns) on the desk, then here (it replaces the link with a copy)" -}}
 {{- end -}}
 
+{{- /* Book-style notes (templates/book.typ) are set in EB Garamond; without it they
+       fall back to Typst's built-in Libertinus. */ -}}
+{{- if and (lookPath "fc-list") (not (output "fc-list" "EB Garamond 12" | trim)) -}}
+{{-   $todo = append $todo "optional, EB Garamond font for book-style notes (else Libertinus is used):\n      sudo apt install fonts-ebgaramond" -}}
+{{- end -}}
+
 {{- /* Optional: only matter for LaTeX viewing. */ -}}
 {{- $opt := list -}}
 {{- range list "latexmk" "zathura" "xdotool" -}}
