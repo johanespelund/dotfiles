@@ -1,0 +1,6 @@
+# Used by Neovim's <leader>fm (conform: latexindent -m -l <this file>).
+# Wrap paragraphs at 80 columns; line breaks within a paragraph are reflowed.
+# A project's own settings can be added with a localSettings.yaml next to the .tex.
+modifyLineBreaks:
+  textWrapOptions:
+    columns: 80

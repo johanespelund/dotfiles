@@ -528,8 +528,17 @@ require("conform").setup({
 		tex = { "latexindent" },
 	},
 })
--- latexindent (from TeX Live) otherwise writes indent.log into the current directory
-require("conform").formatters.latexindent = { prepend_args = { "-g", "/dev/null" } }
+-- latexindent (from TeX Live): -g keeps indent.log out of the current directory; with
+-- ~/.config/latexindent/settings.yaml, -m wraps paragraphs at its column width (80)
+require("conform").formatters.latexindent = {
+	prepend_args = function()
+		local settings = vim.fn.expand("~/.config/latexindent/settings.yaml")
+		if vim.uv.fs_stat(settings) then
+			return { "-g", "/dev/null", "-m", "-l=" .. settings }
+		end
+		return { "-g", "/dev/null" }
+	end,
+}
 -- Projects with a .clang-format file use it; otherwise LLVM style with 4-space indents
 require("conform").formatters["clang-format"] = {
 	prepend_args = function(_, ctx)
