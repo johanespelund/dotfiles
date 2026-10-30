@@ -96,6 +96,9 @@ vim.g.vimtex_compiler_latexmk = {
 }
 -- Full zathura support needs xdotool (sudo apt install xdotool); the simple variant works without
 vim.g.vimtex_view_method = vim.fn.executable("xdotool") == 1 and "zathura" or "zathura_simple"
+-- Ctrl+click runs nvim from zathura. As an AppImage, v:progpath is a temporary mount
+-- that vanishes when this nvim exits, leaving open PDFs unable to jump back.
+vim.g.vimtex_callback_progpath = vim.env.APPIMAGE or vim.v.progpath
 -- bin/ has zathura/xdotool wrappers that open the PDF on the display you're typing on (desk or laptop)
 vim.env.PATH = vim.fn.stdpath("config") .. "/bin:" .. vim.env.PATH
 
