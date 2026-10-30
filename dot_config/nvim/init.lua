@@ -525,8 +525,11 @@ require("conform").setup({
 		c = { "clang-format" },
 		cpp = { "clang-format" },
 		fortran = { "fprettify", "findent", stop_after_first = true },
+		tex = { "latexindent" },
 	},
 })
+-- latexindent (from TeX Live) otherwise writes indent.log into the current directory
+require("conform").formatters.latexindent = { prepend_args = { "-g", "/dev/null" } }
 -- Projects with a .clang-format file use it; otherwise LLVM style with 4-space indents
 require("conform").formatters["clang-format"] = {
 	prepend_args = function(_, ctx)
