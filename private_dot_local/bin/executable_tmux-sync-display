@@ -1,0 +1,19 @@
+#!/bin/sh
+# Point every tmux session's DISPLAY at the desk's X display while a desk (non-SSH)
+# client is attached. tmux only takes DISPLAY from a client when it attaches, so after
+# the laptop attaches over ssh -X and leaves, the session keeps its dead forward
+# (localhost:10.0) and copy-mode y (xsel) stops reaching the desk clipboard.
+# Run from tmux.conf hooks on client attach/detach.
+
+display=
+for pid in $(tmux list-clients -F '#{client_pid}'); do
+  env=$(tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null) || continue
+  printf '%s\n' "$env" | grep -q '^SSH_CONNECTION=' && continue
+  display=$(printf '%s\n' "$env" | sed -n 's/^DISPLAY=//p')
+  [ -n "$display" ] && break
+done
+[ -n "$display" ] || exit 0
+
+tmux list-sessions -F '#{session_name}' | while IFS= read -r s; do
+  tmux set-environment -t "=$s" DISPLAY "$display"
+done
