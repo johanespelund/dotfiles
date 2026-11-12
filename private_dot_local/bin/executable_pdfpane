@@ -176,12 +176,20 @@ class Viewer:
             self.status("could not render page (PDF being written?)")
             return
         out = sys.stdout.buffer
-        out.write(b"\x1b[H\x1b[2J")
+        # Synchronized output (mode 2026): the terminal shows the frame once complete
+        out.write(b"\x1b[?2026h")
+        # Clearing first shows a black pane while the image is processed; a page of the
+        # same size and place covers the old one, so then just draw over it
+        same_place = self.geometry is not None and (
+            self.geometry[0], self.geometry[3], self.geometry[4]) == (pad, scale_w, scale_h)
+        if not same_place:
+            out.write(b"\x1b[H\x1b[2J")
         # Centre the page horizontally
         self.geometry = (pad, cw, ch, scale_w, scale_h, pw, ph)
         out.write(f"\x1b[1;{pad + 1}H".encode())
         out.write(sixel)
         self.status()
+        out.write(b"\x1b[?2026l")
         out.flush()
         if not self.fit_width:
             self.prefetch(self.page + 1)
