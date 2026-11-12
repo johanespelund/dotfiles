@@ -89,6 +89,32 @@
 {{-   $todo = append $todo "optional, EB Garamond font for book-style notes (else Libertinus is used):\n      sudo apt install fonts-ebgaramond" -}}
 {{- end -}}
 
+{{- /* PDF pane next to Neovim (pdfpane, vimtex's viewer in tmux on a Sixel terminal such
+       as WezTerm or Windows Terminal 1.22+). Only on machines with LaTeX. Without these,
+       vimtex uses zathura. tmux 3.4+ must be built with Sixel; Ubuntu 22.04's 3.2a can't. */ -}}
+{{- if lookPath "latexmk" -}}
+{{-   $pane := list -}}
+{{-   $tmuxOk := stat (joinPath .chezmoi.homeDir ".local/opt/tmux-3.5a/bin/tmux") -}}
+{{-   if and (not $tmuxOk) (lookPath "tmux") -}}
+{{-     $tmuxOk = semverCompare ">=3.4.0" (output "tmux" "-V" | regexFind "[0-9]+\\.[0-9]+" | printf "%s.0") -}}
+{{-   end -}}
+{{-   if not $tmuxOk -}}
+{{-     $pane = append $pane "tmux 3.4+ with Sixel (here: build 3.5a into ~/.local/opt; ~/.zshrc puts it first in PATH, then restart the tmux server):\n        sudo apt install libevent-dev libncurses-dev bison pkg-config && cd /tmp && curl -L https://github.com/tmux/tmux/releases/download/3.5a/tmux-3.5a.tar.gz | tar xz && cd tmux-3.5a && ./configure --prefix=$HOME/.local/opt/tmux-3.5a --enable-sixel && make -j && make install" -}}
+{{-   end -}}
+{{-   if not (and (lookPath "pdftoppm") (lookPath "pdfinfo")) -}}
+{{-     $pane = append $pane "pdftoppm, pdfinfo:\n        sudo apt install poppler-utils" -}}
+{{-   end -}}
+{{-   if not (and (lookPath "convert") (contains "SIXEL" (output "convert" "-list" "format"))) -}}
+{{-     $pane = append $pane "ImageMagick with Sixel:\n        sudo apt install imagemagick" -}}
+{{-   end -}}
+{{-   if not (lookPath "synctex") -}}
+{{-     $pane = append $pane "synctex (comes with TeX Live)" -}}
+{{-   end -}}
+{{-   if $pane -}}
+{{-     $todo = append $todo (printf "optional, for the PDF pane next to Neovim (else vimtex uses zathura):\n      - %s" (join "\n      - " $pane)) -}}
+{{-   end -}}
+{{- end -}}
+
 {{- /* Optional: only matter for LaTeX viewing. */ -}}
 {{- $opt := list -}}
 {{- range list "latexmk" "zathura" "xdotool" -}}
