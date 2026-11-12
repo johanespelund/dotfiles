@@ -1,0 +1,234 @@
+#!/usr/bin/env python3
+"""Show a PDF in a terminal pane as Sixel graphics, reloading when the file changes.
+
+Needs a Sixel terminal (WezTerm, foot, Windows Terminal 1.22+), inside tmux 3.4+ built
+with Sixel. Renders with pdftoppm and ImageMagick's convert.
+
+    pdfpane file.pdf [page]
+
+Keys: j/k or space/backspace next/previous page, g/G first/last, w fit width/page,
+J/K scroll (fit width), i invert colours, r redraw, q quit.
+Other programs can turn the page through the control FIFO (see fifo_path), e.g.
+    echo "page 4" > "$(pdfpane --fifo file.pdf)"
+which is how Neovim's \\lv (pdfpane-sync) jumps to the cursor's page.
+"""
+
+import fcntl
+import hashlib
+import os
+import re
+import select
+import signal
+import struct
+import subprocess
+import sys
+import tempfile
+import termios
+import time
+import tty
+
+
+def fifo_path(pdf):
+    run = os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir()
+    key = hashlib.sha1(os.path.realpath(pdf).encode()).hexdigest()[:12]
+    return os.path.join(run, f"pdfpane-{key}.fifo")
+
+
+def pane_size():
+    """(cols, rows, cell width px, cell height px) of this pane."""
+    rows, cols, xpx, ypx = struct.unpack("HHHH", fcntl.ioctl(1, termios.TIOCGWINSZ, b"\0" * 8))
+    if xpx and ypx:
+        return cols, rows, xpx / cols, ypx / rows
+    return cols, rows, 10, 20  # terminal didn't say; a common cell size
+
+
+def page_count(pdf):
+    out = subprocess.run(["pdfinfo", pdf], capture_output=True, text=True).stdout
+    m = re.search(r"^Pages:\s+(\d+)", out, re.M)
+    return int(m.group(1)) if m else 0
+
+
+def page_size(pdf, page):
+    out = subprocess.run(["pdfinfo", "-f", str(page), "-l", str(page), pdf],
+                         capture_output=True, text=True).stdout
+    m = re.search(r"Page\s+\d+ size:\s+([\d.]+) x ([\d.]+)", out)
+    return (float(m.group(1)), float(m.group(2))) if m else (595.0, 842.0)
+
+
+class Viewer:
+    def __init__(self, pdf, page):
+        self.pdf = pdf
+        self.page = page
+        self.fit_width = False
+        self.scroll = 0  # pixel offset from the top in fit-width mode
+        self.invert = False
+        self.pages = 0
+        self.mtime = None
+        self.message = ""
+
+    def render(self):
+        """Draw the current page below a one-line status bar."""
+        cols, rows, cw, ch = pane_size()
+        width_px = int(cols * cw)
+        height_px = int((rows - 1) * ch)  # the bottom line is the status bar
+        pw, ph = page_size(self.pdf, self.page)
+        if self.fit_width:
+            scale_w = width_px
+        else:
+            scale_w = int(min(width_px, height_px * pw / ph))
+        scale_h = int(scale_w * ph / pw)
+        if not self.fit_width:
+            # pdftoppm rounds up; a pixel too tall spills onto the status line and
+            # tmux drops the whole image
+            scale_h = min(scale_h, height_px)
+        self.scroll = max(0, min(self.scroll, scale_h - height_px))
+        png = subprocess.run(
+            ["pdftoppm", "-f", str(self.page), "-l", str(self.page), "-png",
+             "-scale-to-x", str(scale_w), "-scale-to-y", str(scale_h), self.pdf],  # no root: stdout
+            capture_output=True).stdout
+        if not png:
+            self.status("could not render page (PDF being written?)")
+            return
+        args = ["convert", "png:-"]
+        if self.fit_width:
+            args += ["-crop", f"{scale_w}x{min(height_px, scale_h)}+0+{self.scroll}", "+repage"]
+        if self.invert:
+            args += ["-negate"]
+        sixel = subprocess.run(args + ["sixel:-"], input=png, capture_output=True).stdout
+        out = sys.stdout.buffer
+        out.write(b"\x1b[H\x1b[2J")
+        # Centre the page horizontally
+        pad = max(0, int((width_px - scale_w) / cw / 2))
+        out.write(f"\x1b[1;{pad + 1}H".encode())
+        out.write(sixel)
+        self.status()
+        out.flush()
+
+    def status(self, message=None):
+        if message is not None:
+            self.message = message
+        cols, rows, _, _ = pane_size()
+        mode = "width" if self.fit_width else "page"
+        text = f" {os.path.basename(self.pdf)}  {self.page}/{self.pages}  [{mode}]  {self.message}"
+        sys.stdout.write(f"\x1b[{rows};1H\x1b[2K\x1b[7m{text[:cols].ljust(cols)}\x1b[0m")
+        sys.stdout.flush()
+
+    def reload_if_changed(self, force=False):
+        try:
+            mtime = os.stat(self.pdf).st_mtime
+        except FileNotFoundError:
+            return
+        if not force and mtime == self.mtime:
+            return
+        # Wait for latexmk to finish writing: the file must stop changing
+        time.sleep(0.2)
+        if os.stat(self.pdf).st_mtime != mtime:
+            return
+        pages = page_count(self.pdf)
+        if not pages:
+            return
+        self.mtime, self.pages = mtime, pages
+        self.page = max(1, min(self.page, pages))
+        self.render()
+
+    def goto(self, page):
+        page = max(1, min(page, self.pages))
+        if page != self.page:
+            self.page, self.scroll = page, 0
+            self.render()
+
+    def key(self, k):
+        _, rows, _, ch = pane_size()
+        step = int((rows - 1) * ch * 0.8)
+        if k in ("j", " ", "n", "\x1b[B", "\x1b[6~"):
+            self.goto(self.page + 1)
+        elif k in ("k", "\x7f", "p", "\x1b[A", "\x1b[5~"):
+            self.goto(self.page - 1)
+        elif k == "g":
+            self.goto(1)
+        elif k == "G":
+            self.goto(self.pages)
+        elif k == "w":
+            self.fit_width, self.scroll = not self.fit_width, 0
+            self.render()
+        elif k == "J" and self.fit_width:
+            self.scroll += step
+            self.render()
+        elif k == "K" and self.fit_width:
+            self.scroll -= step
+            self.render()
+        elif k == "i":
+            self.invert = not self.invert
+            self.render()
+        elif k == "r":
+            self.reload_if_changed(force=True)
+        elif k == "q":
+            return False
+        return True
+
+    def command(self, line):
+        parts = line.split()
+        if len(parts) == 2 and parts[0] == "page" and parts[1].isdigit():
+            self.goto(int(parts[1]))
+
+
+def main():
+    if len(sys.argv) >= 3 and sys.argv[1] == "--fifo":
+        print(fifo_path(sys.argv[2]))
+        return
+    if len(sys.argv) < 2:
+        sys.exit(__doc__)
+    pdf = os.path.abspath(sys.argv[1])
+    viewer = Viewer(pdf, int(sys.argv[2]) if len(sys.argv) > 2 else 1)
+
+    fifo = fifo_path(pdf)
+    if os.path.exists(fifo):
+        os.remove(fifo)
+    os.mkfifo(fifo, 0o600)
+    # Opened read-write so it never reports EOF when a writer closes
+    ctl = os.open(fifo, os.O_RDWR | os.O_NONBLOCK)
+
+    old = termios.tcgetattr(0)
+    resized = []
+    signal.signal(signal.SIGWINCH, lambda *_: resized.append(1))
+    try:
+        tty.setcbreak(0)
+        sys.stdout.write("\x1b[?25l")  # hide cursor
+        while not os.path.exists(pdf):
+            viewer.status("waiting for the PDF")
+            time.sleep(0.5)
+        viewer.reload_if_changed(force=True)
+        buf = b""
+        running = True
+        while running:
+            try:
+                ready, _, _ = select.select([0, ctl], [], [], 0.5)
+            except InterruptedError:
+                ready = []
+            if resized:
+                resized.clear()
+                viewer.render()
+            if 0 in ready:
+                data = os.read(0, 32).decode(errors="ignore")
+                # Arrow and page keys arrive as escape sequences; others one by one
+                for k in re.findall(r"\x1b\[[0-9;]*[A-Za-z~]|.", data, re.S):
+                    if not viewer.key(k):
+                        running = False
+                        break
+            if ctl in ready:
+                buf += os.read(ctl, 1024)
+                *lines, buf = buf.split(b"\n")
+                for line in lines:
+                    viewer.command(line.decode(errors="ignore"))
+            viewer.reload_if_changed()
+    finally:
+        termios.tcsetattr(0, termios.TCSADRAIN, old)
+        sys.stdout.write("\x1b[H\x1b[2J\x1b[?25h")
+        sys.stdout.flush()
+        os.close(ctl)
+        if os.path.exists(fifo):
+            os.remove(fifo)
+
+
+if __name__ == "__main__":
+    main()

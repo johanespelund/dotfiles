@@ -96,6 +96,16 @@ vim.g.vimtex_compiler_latexmk = {
 }
 -- Full zathura support needs xdotool (sudo apt install xdotool); the simple variant works without
 vim.g.vimtex_view_method = vim.fn.executable("xdotool") == 1 and "zathura" or "zathura_simple"
+-- In tmux on a terminal that shows Sixel images (tmux 3.4+ built with Sixel, WezTerm or
+-- Windows Terminal), show the PDF in a pane next to Neovim instead (~/.local/bin/pdfpane).
+if vim.env.TMUX and vim.fn.executable("pdfpane-sync") == 1 then
+	local features = vim.fn.system({ "tmux", "display-message", "-p", "#{client_termfeatures}" })
+	if vim.v.shell_error == 0 and features:find("sixel", 1, true) then
+		vim.g.vimtex_view_method = "general"
+		vim.g.vimtex_view_general_viewer = "pdfpane-sync"
+		vim.g.vimtex_view_general_options = "@pdf @line @tex"
+	end
+end
 -- Ctrl+click runs nvim from zathura. As an AppImage, v:progpath is a temporary mount
 -- that vanishes when this nvim exits, leaving open PDFs unable to jump back.
 vim.g.vimtex_callback_progpath = vim.env.APPIMAGE or vim.v.progpath
