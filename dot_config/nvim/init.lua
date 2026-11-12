@@ -510,6 +510,12 @@ vim.lsp.config("lua_ls", {
 	},
 })
 
+-- texlab completes cite keys and labels after the commands it knows; add our own
+-- shorthands (Paper-III: \tcite = \citet, \pcite = \citep)
+vim.lsp.config("texlab", {
+	settings = { texlab = { experimental = { citationCommands = { "tcite", "pcite" } } } },
+})
+
 vim.lsp.config("tinymist", {
 	on_attach = function(client, bufnr)
 		vim.keymap.set("n", "<leader>tpm", function()
