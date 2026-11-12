@@ -153,6 +153,8 @@ PATH="$PATH:$HOME/bin"
 PATH="$PATH:$HOME/neovim/bin"
 # TeX Live 2026 (user install via install-tl), ahead of the distro's older TeX Live
 [ -d "$HOME/texlive/2026/bin/x86_64-linux" ] && PATH="$HOME/texlive/2026/bin/x86_64-linux:$PATH"
+# tmux 3.5a built with Sixel (PDF pane next to Neovim); Ubuntu 22.04's 3.2a can't show images
+[ -x "$HOME/.local/opt/tmux-3.5a/bin/tmux" ] && PATH="$HOME/.local/opt/tmux-3.5a/bin:$PATH"
 
 export EDITOR='nvim'
 # source ~/.openai_kay.zsh
