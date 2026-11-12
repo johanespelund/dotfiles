@@ -105,6 +105,9 @@ vim.keymap.set("n", "<leader>s/", fzf("lines"), { desc = "[S]earch in open buffe
 -- LaTeX (vimtex): latexmk with SyncTeX, PDF in zathura. \ll compiles continuously,
 -- \lv jumps the PDF to the cursor, Ctrl+click in zathura jumps back to the source.
 vim.g.vimtex_compiler_method = "latexmk"
+-- No conceal is used, so don't colour \mathcal{D}, \leq etc. as one symbol: \mathcal is
+-- then a style command like \mathrm, and its argument ordinary math
+vim.g.vimtex_syntax_conceal = { math_symbols = 0 }
 vim.g.vimtex_compiler_latexmk = {
 	options = { "-shell-escape", "-verbose", "-file-line-error", "-synctex=1", "-interaction=nonstopmode" },
 }
