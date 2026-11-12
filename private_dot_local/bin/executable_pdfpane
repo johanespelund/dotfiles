@@ -226,11 +226,12 @@ class Viewer:
         The key (page, width, scroll, height, invert, mtime) names the Sixel."""
         cols, rows, cw, ch = pane_size()
         width_px = int(cols * cw)
-        height_px = int((rows - 1) * ch)  # the bottom line is the status bar
+        # Above the status bar. tmux sizes a Sixel in whole 6-pixel bands, rounded up to
+        # rows; a pixel too tall spills onto the status line and tmux drops the image
+        height_px = int((rows - 1) * ch) // 6 * 6
         pw, ph = self.sizes[page - 1]
         w = max(1, width_px if self.fit_width else int(min(width_px, height_px * pw / ph)))
         full_h = max(1, int(w * ph / pw))
-        # A pixel too tall spills onto the status line and tmux drops the whole image
         h = min(full_h, height_px)
         scroll = max(0, min(scroll, full_h - h))
         pad = max(0, int((width_px - w) / cw / 2))
