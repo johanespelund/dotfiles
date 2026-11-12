@@ -16,16 +16,21 @@ esac
 mkdir -p "$(dirname "$state")"
 echo "$new" >"$state"
 
-# tmux: status bar via the catppuccin plugin; pane background so shells match Neovim
+# tmux: status bar via the catppuccin plugin; pane background so shells match Neovim.
+# Every server (default, and e.g. tmux -L sixel in WezTerm).
 catppuccin="$HOME/.tmux/plugins/catppuccin-tmux/catppuccin.tmux"
-if tmux has-session 2>/dev/null; then
+for sock in "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"/*; do
+	[ -S "$sock" ] && tmux -S "$sock" has-session 2>/dev/null || continue
 	if [ "$new" = light ]; then
-		tmux set -g @catppuccin_flavour latte \; set -g window-style "fg=#4c4f69,bg=#eff1f5"
+		tmux -S "$sock" set -g @catppuccin_flavour latte \; set -g window-style "fg=#4c4f69,bg=#eff1f5"
 	else
-		tmux set -g @catppuccin_flavour mocha \; set -g window-style default
+		tmux -S "$sock" set -g @catppuccin_flavour mocha \; set -g window-style default
 	fi
-	[ -x "$catppuccin" ] && tmux run-shell "$catppuccin"
-fi
+	[ -x "$catppuccin" ] && tmux -S "$sock" run-shell "$catppuccin"
+done
+
+# WezTerm reloads its config when the file changes; the config reads the theme file
+[ -f "$HOME/.wezterm.lua" ] && touch "$HOME/.wezterm.lua"
 
 # Neovim: every instance listens on a socket in its run dir (:h stdpath)
 for sock in "${XDG_RUNTIME_DIR:-/nonexistent}"/nvim.*.0 "${TMPDIR:-/tmp}/nvim.$USER"/*/nvim.*.0; do
