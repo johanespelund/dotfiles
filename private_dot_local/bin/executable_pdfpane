@@ -38,7 +38,7 @@ import gi
 gi.require_version("Poppler", "0.18")
 from gi.repository import GLib, Poppler  # noqa: E402
 
-COLOURS = 32  # in the Sixel palette, at most 64
+COLOURS = 64  # in the Sixel palette, at most 64 (32 turns some plot colours grey)
 SIXEL_C = r"""
 #include <stdio.h>
 #include <stdlib.h>
