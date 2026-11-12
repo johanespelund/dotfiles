@@ -18,5 +18,6 @@ if [ -p "$fifo" ] && timeout 1 sh -c 'echo "page $1" > "$2"' sh "$page" "$fifo";
 fi
 [ -p "$fifo" ] && rm -f "$fifo"
 
-tmux split-window -h -d -l 45% ${TMUX_PANE:+-t "$TMUX_PANE"} \
+# PDFPANE_FROM: the pane to focus after a double-click jump back to the source
+tmux split-window -h -d -l 45% ${TMUX_PANE:+-t "$TMUX_PANE" -e "PDFPANE_FROM=$TMUX_PANE"} \
   "exec pdfpane $(printf '%s' "$pdf" | sed "s/'/'\\\\''/g; s/^/'/; s/\$/'/") $page"

@@ -7,7 +7,9 @@ with Sixel. Renders with pdftoppm and ImageMagick's convert.
     pdfpane file.pdf [page]
 
 Keys: j/k or space/backspace next/previous page, g/G first/last, w fit width/page,
-J/K scroll (fit width), i invert colours, r redraw, q quit.
+J/K scroll (fit width), i invert colours, r redraw, q quit. Mouse: wheel turns pages
+(scrolls in fit width); double-click jumps to that spot in the LaTeX source in Neovim
+(SyncTeX + vimtex's VimtexInverseSearch), then focuses the pane in $PDFPANE_FROM.
 Other programs can turn the page through the control FIFO (see fifo_path), e.g.
     echo "page 4" > "$(pdfpane --fifo file.pdf)"
 which is how Neovim's \\lv (pdfpane-sync) jumps to the cursor's page.
@@ -26,6 +28,13 @@ import tempfile
 import termios
 import time
 import tty
+
+
+def log(*args):
+    """Debug trace, when PDFPANE_LOG names a file."""
+    if os.environ.get("PDFPANE_LOG"):
+        with open(os.environ["PDFPANE_LOG"], "a") as f:
+            print(f"{time.monotonic():.3f}", *args, file=f)
 
 
 def fifo_path(pdf):
@@ -65,6 +74,8 @@ class Viewer:
         self.pages = 0
         self.mtime = None
         self.message = ""
+        self.geometry = None  # where the page was drawn, for mapping clicks
+        self.last_click = (0.0, None)
 
     def render(self):
         """Draw the current page below a one-line status bar."""
@@ -99,6 +110,7 @@ class Viewer:
         out.write(b"\x1b[H\x1b[2J")
         # Centre the page horizontally
         pad = max(0, int((width_px - scale_w) / cw / 2))
+        self.geometry = (pad, cw, ch, scale_w, scale_h, pw, ph)
         out.write(f"\x1b[1;{pad + 1}H".encode())
         out.write(sixel)
         self.status()
@@ -166,6 +178,61 @@ class Viewer:
             return False
         return True
 
+    def mouse(self, button, col, row, press):
+        """SGR mouse report: 1-based cell, button 0 = left, 64/65 = wheel up/down."""
+        log("mouse", button, col, row, press)
+        if not press:
+            return
+        if button in (64, 65):
+            down = button == 65
+            if self.fit_width:
+                self.key("J" if down else "K")
+            else:
+                self.goto(self.page + (1 if down else -1))
+            return
+        if button != 0:
+            return
+        now = time.monotonic()
+        last_time, last_cell = self.last_click
+        self.last_click = (now, (col, row))
+        # tmux reports the second click of a double-click one cell off, so allow that
+        if (last_cell and abs(last_cell[0] - col) <= 1 and abs(last_cell[1] - row) <= 1
+                and now - last_time < 0.5):
+            self.last_click = (0.0, None)
+            self.inverse_search(*last_cell)
+
+    def inverse_search(self, col, row):
+        if not self.geometry:
+            return
+        pad, cw, ch, scale_w, scale_h, pw, ph = self.geometry
+        # Centre of the clicked cell, in page pixels, then in PDF points from the top left
+        x = (col - 1 - pad) * cw + cw / 2
+        y = (row - 1) * ch + ch / 2 + (self.scroll if self.fit_width else 0)
+        log("click at page px", x, y, "geometry", self.geometry)
+        if not (0 <= x <= scale_w and 0 <= y <= scale_h):
+            return
+        x, y = x / scale_w * pw, y / scale_h * ph
+        out = subprocess.run(["synctex", "edit", "-o", f"{self.page}:{x:.1f}:{y:.1f}:{self.pdf}"],
+                             capture_output=True, text=True).stdout
+        log("synctex", out.strip().replace("\n", " | ")[:300])
+        src = re.search(r"^Input:(.*)$", out, re.M)
+        line = re.search(r"^Line:(\d+)", out, re.M)
+        if not (src and line):
+            self.status("no source found here (compiled with SyncTeX?)")
+            return
+        path = os.path.normpath(src.group(1))
+        # Same command zathura runs: every Neovim that has this project open jumps
+        subprocess.Popen(["nvim", "--headless", "-c",
+                          f"VimtexInverseSearch {line.group(1)}:0 '{path}'"],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+        if os.environ.get("PDFPANE_FROM"):
+            # Delayed: tmux's own double-click handling selects this pane right after
+            subprocess.Popen(["tmux", "run-shell", "-d", "0.3",
+                              f"tmux select-pane -t {os.environ['PDFPANE_FROM']}"],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.status(f"-> {os.path.basename(path)}:{line.group(1)}")
+
     def command(self, line):
         parts = line.split()
         if len(parts) == 2 and parts[0] == "page" and parts[1].isdigit():
@@ -193,7 +260,8 @@ def main():
     signal.signal(signal.SIGWINCH, lambda *_: resized.append(1))
     try:
         tty.setcbreak(0)
-        sys.stdout.write("\x1b[?25l")  # hide cursor
+        # Hide the cursor; report mouse clicks and wheel (SGR encoding, 1-based cells)
+        sys.stdout.write("\x1b[?25l\x1b[?1000h\x1b[?1006h")
         while not os.path.exists(pdf):
             viewer.status("waiting for the PDF")
             time.sleep(0.5)
@@ -211,7 +279,12 @@ def main():
             if 0 in ready:
                 data = os.read(0, 32).decode(errors="ignore")
                 # Arrow and page keys arrive as escape sequences; others one by one
-                for k in re.findall(r"\x1b\[[0-9;]*[A-Za-z~]|.", data, re.S):
+                for k in re.findall(r"\x1b\[<\d+;\d+;\d+[Mm]|\x1b\[[0-9;]*[A-Za-z~]|.", data, re.S):
+                    m = re.match(r"\x1b\[<(\d+);(\d+);(\d+)([Mm])", k)
+                    if m:
+                        b, c, r = map(int, m.groups()[:3])
+                        viewer.mouse(b, c, r, m.group(4) == "M")
+                        continue
                     if not viewer.key(k):
                         running = False
                         break
@@ -223,7 +296,7 @@ def main():
             viewer.reload_if_changed()
     finally:
         termios.tcsetattr(0, termios.TCSADRAIN, old)
-        sys.stdout.write("\x1b[H\x1b[2J\x1b[?25h")
+        sys.stdout.write("\x1b[?1006l\x1b[?1000l\x1b[H\x1b[2J\x1b[?25h")
         sys.stdout.flush()
         os.close(ctl)
         if os.path.exists(fifo):
