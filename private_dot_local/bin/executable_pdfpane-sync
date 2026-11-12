@@ -7,17 +7,17 @@
 pdf=$(realpath "$1")
 page=1
 if [ -n "$2" ] && [ -n "$3" ]; then
-  page=$(synctex view -i "$2:1:$3" -o "$pdf" 2>/dev/null | sed -n 's/^Page://p' | head -1)
-  [ -n "$page" ] || page=1
+  page=$(synctex view -i "$2:1:$3" -o "$pdf" 2>/dev/null | sed -n '/^Page:/{s///p;q}')
 fi
 
-fifo=$(pdfpane --fifo "$pdf")
+# The path `pdfpane --fifo` prints, without starting Python
+fifo=${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/pdfpane-$(printf '%s' "$pdf" | sha1sum | cut -c1-12).fifo
 # A viewer holds the FIFO open; the timeout covers a FIFO left behind by a crash
-if [ -p "$fifo" ] && timeout 1 sh -c 'echo "page $1" > "$2"' sh "$page" "$fifo"; then
+if [ -p "$fifo" ] && timeout 1 sh -c 'echo "page $1" > "$2"' sh "${page:-1}" "$fifo"; then
   exit 0
 fi
 [ -p "$fifo" ] && rm -f "$fifo"
 
 # PDFPANE_FROM: the pane to focus after a double-click jump back to the source
 tmux split-window -h -d -l 45% ${TMUX_PANE:+-t "$TMUX_PANE" -e "PDFPANE_FROM=$TMUX_PANE"} \
-  "exec pdfpane $(printf '%s' "$pdf" | sed "s/'/'\\\\''/g; s/^/'/; s/\$/'/") $page"
+  "exec pdfpane $(printf '%s' "$pdf" | sed "s/'/'\\\\''/g; s/^/'/; s/\$/'/") ${page:-1}"

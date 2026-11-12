@@ -101,11 +101,9 @@
 {{-   if not $tmuxOk -}}
 {{-     $pane = append $pane "tmux 3.4+ with Sixel (here: build 3.5a into ~/.local/opt; ~/.zshrc puts it first in PATH, then restart the tmux server):\n        sudo apt install libevent-dev libncurses-dev bison pkg-config && cd /tmp && curl -L https://github.com/tmux/tmux/releases/download/3.5a/tmux-3.5a.tar.gz | tar xz && cd tmux-3.5a && ./configure --prefix=$HOME/.local/opt/tmux-3.5a --enable-sixel && make -j && make install" -}}
 {{-   end -}}
-{{-   if not (and (lookPath "pdftoppm") (lookPath "pdfinfo")) -}}
-{{-     $pane = append $pane "pdftoppm, pdfinfo:\n        sudo apt install poppler-utils" -}}
-{{-   end -}}
-{{-   if not (and (lookPath "convert") (contains "SIXEL" (output "convert" "-list" "format"))) -}}
-{{-     $pane = append $pane "ImageMagick with Sixel:\n        sudo apt install imagemagick" -}}
+{{-   $gi := output "sh" "-c" "/usr/bin/python3 -c 'import cairo, gi; gi.require_version(\"Poppler\", \"0.18\")' 2>/dev/null && echo ok; true" -}}
+{{-   if not (and (contains "ok" $gi) (lookPath "gcc")) -}}
+{{-     $pane = append $pane "Poppler for Python (renders pages) and gcc (builds its Sixel encoder once):\n        sudo apt install python3-gi python3-gi-cairo gir1.2-poppler-0.18 gcc" -}}
 {{-   end -}}
 {{-   if not (lookPath "synctex") -}}
 {{-     $pane = append $pane "synctex (comes with TeX Live)" -}}

@@ -1,8 +1,9 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3
 """Show a PDF in a terminal pane as Sixel graphics, reloading when the file changes.
 
 Needs a Sixel terminal (WezTerm, foot, Windows Terminal 1.22+), inside tmux 3.4+ built
-with Sixel. Renders with pdftoppm and ImageMagick's convert.
+with Sixel. Renders with Poppler (python3-gi, python3-gi-cairo) and a small Sixel encoder
+in C, compiled with gcc on first use.
 
     pdfpane file.pdf [page]
 
@@ -15,6 +16,7 @@ Other programs can turn the page through the control FIFO (see fifo_path), e.g.
 which is how Neovim's \\lv (pdfpane-sync) jumps to the cursor's page.
 """
 
+import ctypes
 import fcntl
 import hashlib
 import os
@@ -29,6 +31,119 @@ import termios
 import threading
 import time
 import tty
+
+import cairo
+import gi
+
+gi.require_version("Poppler", "0.18")
+from gi.repository import GLib, Poppler  # noqa: E402
+
+COLOURS = 32  # in the Sixel palette, at most 64
+SIXEL_C = r"""
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+typedef struct { char *s; size_t n, cap; } Buf;
+static void put(Buf *b, int ch, int n) {
+    if (b->n + 16 > b->cap) b->s = realloc(b->s, b->cap = 2 * b->cap + 65536);
+    if (n > 3) b->n += sprintf(b->s + b->n, "!%d%c", n, ch);
+    else while (n--) b->s[b->n++] = ch;
+}
+#define PRINT(...) do { char t[128]; sprintf(t, __VA_ARGS__); \
+    for (char *c = t; *c; c++) put(&b, *c, 1); } while (0)
+#define RGB15(p) ((p)[2] >> 3 << 10 | (p)[1] >> 3 << 5 | (p)[0] >> 3)
+/* BGRx pixels (cairo RGB24) as Sixel in up to 64 colours, median cut without dithering.
+   Each band of six rows is filled with its commonest colour and the others drawn over it. */
+char *sixel(const unsigned char *px, int w, int h, int stride, int colours, int invert,
+            size_t *len) {
+    int cnt[32768] = {0}, box[32768], list[32768], tmp[32768], start[65] = {0};
+    int ncol = 0, nb = 1, flip = invert ? 32767 : 0;
+    unsigned char *idx = malloc((size_t)w * h), *line = malloc((size_t)w * colours);
+    unsigned long long *left = malloc(w * sizeof *left);
+    Buf b = {0};
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++) {
+            int c = RGB15(px + (size_t)y * stride + 4 * x) ^ flip;
+            if (!cnt[c]++) list[ncol++] = c;
+        }
+    start[1] = ncol;
+    /* Split the box with the widest channel range where it holds half its pixels */
+    for (; nb < colours; nb++) {
+        int best = -1, range = 0, axis = 0, pos[33] = {0};
+        for (int k = 0; k < nb; k++)
+            for (int a = 0; a <= 10; a += 5) {
+                int lo = 31, hi = 0;
+                for (int j = start[k]; j < start[k + 1]; j++) {
+                    int v = list[j] >> a & 31;
+                    lo = v < lo ? v : lo, hi = v > hi ? v : hi;
+                }
+                if (hi - lo > range) best = k, range = hi - lo, axis = a;
+            }
+        if (best < 0) break;
+        int s = start[best], e = start[best + 1], m = s;
+        long total = 0, half = 0;
+        for (int j = s; j < e; j++) pos[(list[j] >> axis & 31) + 1]++, total += cnt[list[j]];
+        for (int v = 1; v < 33; v++) pos[v] += pos[v - 1];
+        for (int j = s; j < e; j++) tmp[pos[list[j] >> axis & 31]++] = list[j];
+        memcpy(list + s, tmp, (e - s) * sizeof *list);
+        while (m < e - 2 && 2 * (half += cnt[list[m]]) < total) m++;
+        memmove(start + best + 2, start + best + 1, (nb - best) * sizeof *start);
+        start[best + 1] = m + 1;
+    }
+    PRINT("\033P0;0;0q\"1;1;%d;%d", w, h);
+    for (int k = 0; k < nb; k++) {
+        long n = 0, s[3] = {0};
+        for (int j = start[k]; j < start[k + 1]; j++) {
+            int c = list[j];
+            n += cnt[c], box[c] = k;
+            for (int a = 0; a < 3; a++) s[a] += cnt[c] * (c >> (10 - 5 * a) & 31);
+        }
+        for (int a = 0; a < 3; a++) s[a] = s[a] * 100 / 31 / n;
+        PRINT("#%d;2;%ld;%ld;%ld", k, s[0], s[1], s[2]);
+    }
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++)
+            idx[(size_t)y * w + x] = box[RGB15(px + (size_t)y * stride + 4 * x) ^ flip];
+    for (int y = 0; y < h; y += 6) {
+        int rows = h - y < 6 ? h - y : 6, n[64] = {0}, top = 0, end = w;
+        memset(line, 0, (size_t)w * nb);
+        memset(left, 0, w * sizeof *left);
+        for (int r = 0; r < rows; r++)
+            for (int x = 0; x < w; x++) {
+                int k = idx[(size_t)(y + r) * w + x];
+                n[k]++, line[k * w + x] |= 1 << r, left[x] |= 1ull << k;
+            }
+        for (int k = 1; k < nb; k++) if (n[k] > n[top]) top = k;
+        PRINT("#%d", top);
+        put(&b, 63 + (1 << rows) - 1, w);
+        /* The other colours in passes across the band, switching colour as needed */
+        for (int x = 0; x < w; x++) left[x] &= ~(1ull << top);
+        for (int k = top;;) {
+            while (end && !left[end - 1]) end--;
+            if (!end) break;
+            int ch = '$', run = 1;
+            for (int x = 0; x < end; x++) {
+                int c = '?';
+                if (left[x]) {
+                    if (!(left[x] >> k & 1)) {
+                        put(&b, ch, run), run = 0;
+                        PRINT("#%d", k = __builtin_ctzll(left[x]));
+                    }
+                    c = 63 + line[k * w + x], left[x] &= ~(1ull << k);
+                }
+                if (c != ch) put(&b, ch, run), ch = c, run = 0;
+                run++;
+            }
+            put(&b, ch, run);
+        }
+        if (y + 6 < h) put(&b, '-', 1);
+    }
+    PRINT("\033\\");
+    free(idx), free(line), free(left);
+    *len = b.n;
+    return b.s;
+}
+"""
 
 
 def log(*args):
@@ -52,34 +167,33 @@ def pane_size():
     return cols, rows, 10, 20  # terminal didn't say; a common cell size
 
 
-def page_sizes(pdf):
-    """{page: (width, height) in points}, from one pdfinfo call; {} if unreadable."""
-    out = subprocess.run(["pdfinfo", pdf], capture_output=True, text=True).stdout
-    m = re.search(r"^Pages:\s+(\d+)", out, re.M)
-    if not m:
-        return {}
-    out = subprocess.run(["pdfinfo", "-f", "1", "-l", m.group(1), pdf],
-                         capture_output=True, text=True).stdout
-    return {int(n): (float(w), float(h))
-            for n, w, h in re.findall(r"^Page\s+(\d+) size:\s+([\d.]+) x ([\d.]+)", out, re.M)}
+def sixel_encoder():
+    """The C encoder as a function of (surface, first row, rows, invert), compiled once."""
+    src = SIXEL_C.encode()
+    cache = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
+    lib = os.path.join(cache, "pdfpane", f"sixel-{hashlib.sha1(src).hexdigest()[:12]}.so")
+    if not os.path.exists(lib):
+        os.makedirs(os.path.dirname(lib), exist_ok=True)
+        tmp = f"{lib}.{os.getpid()}"
+        subprocess.run(["gcc", "-O2", "-shared", "-fPIC", "-x", "c", "-", "-o", tmp],
+                       input=src, check=True)
+        os.replace(tmp, lib)
+    c = ctypes.CDLL(lib)
+    c.sixel.restype = ctypes.c_void_p
+    c.sixel.argtypes = [ctypes.c_void_p] + [ctypes.c_int] * 5 + [ctypes.POINTER(ctypes.c_size_t)]
+    free = ctypes.CDLL(None).free
+    free.argtypes = [ctypes.c_void_p]
 
-
-def encode(pdf, page, scale_w, scale_h, crop, invert):
-    """The page as Sixel. Uncompressed PPM and 32 colours without dithering: about
-    five times faster than PNG and 256 dithered colours, and looks the same for text."""
-    ppm = subprocess.run(
-        ["pdftoppm", "-f", str(page), "-l", str(page),
-         "-scale-to-x", str(scale_w), "-scale-to-y", str(scale_h), pdf],  # no root: stdout
-        capture_output=True).stdout
-    if not ppm:
-        return b""
-    args = ["convert", "ppm:-"]
-    if crop:
-        args += ["-crop", crop, "+repage"]
-    if invert:
-        args += ["-negate"]
-    args += ["+dither", "-colors", "32", "sixel:-"]
-    return subprocess.run(args, input=ppm, capture_output=True).stdout
+    def encode(surface, top, rows, invert):
+        stride = surface.get_stride()
+        pixels = ctypes.addressof(ctypes.c_char.from_buffer(surface.get_data())) + top * stride
+        size = ctypes.c_size_t()
+        out = c.sixel(pixels, surface.get_width(), rows, stride, COLOURS, invert,
+                      ctypes.byref(size))
+        data = ctypes.string_at(out, size.value)
+        free(out)
+        return data
+    return encode
 
 
 class Viewer:
@@ -89,111 +203,130 @@ class Viewer:
         self.fit_width = False
         self.scroll = 0  # pixel offset from the top in fit-width mode
         self.invert = False
+        self.doc = None
         self.pages = 0
-        self.sizes = {}
-        self.mtime = None
+        self.sizes = []
+        self.mtime = self.tried = None  # of the PDF shown, and last looked at
         self.dirty = False  # redraw once the pending input is handled
-        # Sixel by layout; neighbouring pages are prepared in the background
-        self.cache = {}
+        self.encode = sixel_encoder()
+        # Rendered pages and Sixel by layout; a worker prepares what is likely next
+        self.pixels = {}
+        self.sixels = {}
         self.pending = {}
+        self.wanted = []
+        self.worker = None
         self.lock = threading.Lock()
+        self.render_lock = threading.Lock()  # one Poppler render at a time
         self.message = ""
         self.geometry = None  # where the page was drawn, for mapping clicks
         self.last_click = (0.0, None)
 
-    def layout(self, page):
-        """(key, page width, height and crop in pixels, pad, cell size, page points)."""
+    def layout(self, page, scroll=0):
+        """(key, pad, cell w and h, page width, shown and full height in px, page points).
+        The key (page, width, scroll, height, invert, mtime) names the Sixel."""
         cols, rows, cw, ch = pane_size()
         width_px = int(cols * cw)
         height_px = int((rows - 1) * ch)  # the bottom line is the status bar
-        pw, ph = self.sizes.get(page, (595.0, 842.0))
-        if self.fit_width:
-            scale_w = width_px
-        else:
-            scale_w = int(min(width_px, height_px * pw / ph))
-        scale_h = int(scale_w * ph / pw)
-        crop = None
-        if self.fit_width:
-            scroll = max(0, min(self.scroll, scale_h - height_px)) if page == self.page else 0
-            crop = f"{scale_w}x{min(height_px, scale_h)}+0+{scroll}"
-        else:
-            # pdftoppm rounds up; a pixel too tall spills onto the status line and
-            # tmux drops the whole image
-            scale_h = min(scale_h, height_px)
-        pad = max(0, int((width_px - scale_w) / cw / 2))
-        key = (page, scale_w, scale_h, crop, self.invert, self.mtime)
-        return key, scale_w, scale_h, crop, pad, cw, ch, pw, ph
+        pw, ph = self.sizes[page - 1]
+        w = max(1, width_px if self.fit_width else int(min(width_px, height_px * pw / ph)))
+        full_h = max(1, int(w * ph / pw))
+        # A pixel too tall spills onto the status line and tmux drops the whole image
+        h = min(full_h, height_px)
+        scroll = max(0, min(scroll, full_h - h))
+        pad = max(0, int((width_px - w) / cw / 2))
+        return (page, w, scroll, h, self.invert, self.mtime), pad, cw, ch, w, h, full_h, pw, ph
 
-    def sixel(self, page):
-        key, scale_w, scale_h, crop, *_ = self.layout(page)
+    def sixel(self, key):
+        """The Sixel for a layout key: cached, from the worker, or made now."""
         with self.lock:
-            if key in self.cache:
-                return self.cache[key]
-            waiting = self.pending.get(key)
-        if waiting:
-            waiting.wait()
+            if key in self.sixels:
+                self.sixels[key] = self.sixels.pop(key)  # most recently used last
+                return self.sixels[key]
+            done = self.pending.get(key)
+            mine = done is None
+            if mine:
+                done = self.pending[key] = threading.Event()
+        if not mine:
+            done.wait()
             with self.lock:
-                if key in self.cache:
-                    return self.cache[key]
-        data = encode(self.pdf, page, scale_w, scale_h, crop, self.invert)
-        with self.lock:
-            if data:
-                self.cache[key] = data
-                while len(self.cache) > 12:
-                    self.cache.pop(next(iter(self.cache)))
-        return data
-
-    def prefetch(self, page):
-        if not 1 <= page <= self.pages:
-            return
-        key, scale_w, scale_h, crop, *_ = self.layout(page)
-        with self.lock:
-            if key in self.cache or key in self.pending:
-                return
-            done = self.pending[key] = threading.Event()
-        invert = self.invert
-
-        def work():
-            data = encode(self.pdf, page, scale_w, scale_h, crop, invert)
+                return self.sixels.get(key, b"")
+        page, w, scroll, h, invert, mtime = key
+        try:
+            with self.render_lock:
+                if mtime != self.mtime:
+                    return b""  # the PDF was reloaded meanwhile
+                surface = self.pixels.get((page, w, mtime))
+                if surface is None:
+                    surface = self.pixels[(page, w, mtime)] = self.render_page(page, w)
+                    while len(self.pixels) > 6:
+                        self.pixels.pop(next(iter(self.pixels)))
+            data = self.encode(surface, scroll, h, invert)
             with self.lock:
-                if data:
-                    self.cache[key] = data
-                self.pending.pop(key, None)
+                self.sixels[key] = data
+                while len(self.sixels) > 12:
+                    self.sixels.pop(next(iter(self.sixels)))
+            return data
+        finally:
+            with self.lock:
+                self.pending.pop(key)
             done.set()
 
-        threading.Thread(target=work, daemon=True).start()
+    def render_page(self, page, width):
+        p = self.doc.get_page(page - 1)
+        pw, ph = p.get_size()
+        surface = cairo.ImageSurface(cairo.FORMAT_RGB24, width, max(1, int(width * ph / pw)))
+        ctx = cairo.Context(surface)
+        ctx.set_source_rgb(1, 1, 1)
+        ctx.paint()
+        ctx.scale(width / pw, width / pw)
+        p.render(ctx)
+        surface.flush()
+        return surface
+
+    def prefetch(self, keys):
+        """Prepare these in the background, in order, replacing earlier wishes."""
+        with self.lock:
+            self.wanted = keys
+            if not self.worker:
+                self.worker = threading.Thread(target=self.work, daemon=True)
+                self.worker.start()
+
+    def work(self):
+        while True:
+            with self.lock:
+                todo = [k for k in self.wanted if k not in self.sixels and k not in self.pending]
+                if not todo:
+                    self.worker = None
+                    return
+                self.wanted.remove(todo[0])
+            self.sixel(todo[0])
 
     def render(self):
         """Draw the current page below a one-line status bar."""
         self.dirty = False
-        if self.fit_width:
-            _, _, scale_h, _, _, _, ch, _, _ = self.layout(self.page)
-            _, rows, _, _ = pane_size()
-            self.scroll = max(0, min(self.scroll, scale_h - int((rows - 1) * ch)))
-        key, scale_w, scale_h, crop, pad, cw, ch, pw, ph = self.layout(self.page)
-        sixel = self.sixel(self.page)
-        if not sixel:
-            self.status("could not render page (PDF being written?)")
-            return
+        key, pad, cw, ch, w, h, full_h, pw, ph = self.layout(self.page, self.scroll)
+        self.scroll = key[2]
+        sixel = self.sixel(key)
         out = sys.stdout.buffer
         # Synchronized output (mode 2026): the terminal shows the frame once complete
         out.write(b"\x1b[?2026h")
         # Clearing first shows a black pane while the image is processed; a page of the
         # same size and place covers the old one, so then just draw over it
-        same_place = self.geometry is not None and (
-            self.geometry[0], self.geometry[3], self.geometry[4]) == (pad, scale_w, scale_h)
-        if not same_place:
+        if self.geometry is None or (self.geometry[0], self.geometry[3:5]) != (pad, (w, h)):
             out.write(b"\x1b[H\x1b[2J")
+        self.geometry = (pad, cw, ch, w, h, full_h, pw, ph)
         # Centre the page horizontally
-        self.geometry = (pad, cw, ch, scale_w, scale_h, pw, ph)
         out.write(f"\x1b[1;{pad + 1}H".encode())
         out.write(sixel)
         self.status()
         out.write(b"\x1b[?2026l")
         out.flush()
-        if not self.fit_width:
-            self.prefetch(self.page + 1)
-            self.prefetch(self.page - 1)
+        # Likely next: the neighbouring pages, or the next scroll steps in fit width
+        nearby = [(self.page + d, 0) for d in (1, -1, 2, -2) if 1 <= self.page + d <= self.pages]
+        if self.fit_width:
+            step = self.step()
+            nearby[:0] = [(self.page, self.scroll + step), (self.page, self.scroll - step)]
+        self.prefetch([self.layout(p, s)[0] for p, s in nearby])
 
     def status(self, message=None):
         if message is not None:
@@ -209,18 +342,27 @@ class Viewer:
             mtime = os.stat(self.pdf).st_mtime
         except FileNotFoundError:
             return
-        if not force and mtime == self.mtime:
+        # Wait for latexmk to finish writing: the file must have stopped changing
+        if (mtime == self.tried and not force) or time.time() - mtime < 0.2:
             return
-        # Wait for latexmk to finish writing: the file must stop changing
-        time.sleep(0.2)
-        if os.stat(self.pdf).st_mtime != mtime:
-            return
-        sizes = page_sizes(self.pdf)
-        if not sizes:
-            return
-        self.mtime, self.sizes, self.pages = mtime, sizes, len(sizes)
+        self.tried = mtime
+        # From memory, so that rewriting the file cannot affect pages still to render
+        with open(self.pdf, "rb") as f, self.render_lock:
+            try:
+                doc = Poppler.Document.new_from_bytes(GLib.Bytes(f.read()), None)
+            except GLib.Error:
+                return  # damaged: still being written, try again
+            sizes = [doc.get_page(i).get_size() for i in range(doc.get_n_pages())]
+            if not sizes:
+                return
+            self.doc, self.sizes, self.mtime, self.pages = doc, sizes, mtime, len(sizes)
         self.page = max(1, min(self.page, self.pages))
         self.render()
+
+    def step(self):
+        """Scroll step for J/K: most of a screen."""
+        _, rows, _, ch = pane_size()
+        return int((rows - 1) * ch * 0.8)
 
     def goto(self, page):
         page = max(1, min(page, self.pages))
@@ -229,8 +371,6 @@ class Viewer:
             self.dirty = True
 
     def key(self, k):
-        _, rows, _, ch = pane_size()
-        step = int((rows - 1) * ch * 0.8)
         if k in ("j", " ", "n", "\x1b[B", "\x1b[6~"):
             self.goto(self.page + 1)
         elif k in ("k", "\x7f", "p", "\x1b[A", "\x1b[5~"):
@@ -242,11 +382,8 @@ class Viewer:
         elif k == "w":
             self.fit_width, self.scroll = not self.fit_width, 0
             self.dirty = True
-        elif k == "J" and self.fit_width:
-            self.scroll += step
-            self.dirty = True
-        elif k == "K" and self.fit_width:
-            self.scroll -= step
+        elif k in ("J", "K") and self.fit_width:
+            self.scroll += self.step() if k == "J" else -self.step()
             self.dirty = True
         elif k == "i":
             self.invert = not self.invert
@@ -283,14 +420,14 @@ class Viewer:
     def inverse_search(self, col, row):
         if not self.geometry:
             return
-        pad, cw, ch, scale_w, scale_h, pw, ph = self.geometry
+        pad, cw, ch, w, h, full_h, pw, ph = self.geometry
         # Centre of the clicked cell, in page pixels, then in PDF points from the top left
         x = (col - 1 - pad) * cw + cw / 2
-        y = (row - 1) * ch + ch / 2 + (self.scroll if self.fit_width else 0)
+        y = (row - 1) * ch + ch / 2 + self.scroll
         log("click at page px", x, y, "geometry", self.geometry)
-        if not (0 <= x <= scale_w and 0 <= y <= scale_h):
+        if not (0 <= x <= w and 0 <= y <= full_h):
             return
-        x, y = x / scale_w * pw, y / scale_h * ph
+        x, y = x / w * pw, y / full_h * ph
         out = subprocess.run(["synctex", "edit", "-o", f"{self.page}:{x:.1f}:{y:.1f}:{self.pdf}"],
                              capture_output=True, text=True).stdout
         log("synctex", out.strip().replace("\n", " | ")[:300])
@@ -337,19 +474,23 @@ def main():
     old = termios.tcgetattr(0)
     resized = []
     signal.signal(signal.SIGWINCH, lambda *_: resized.append(1))
+    # Closing the pane: clean up as for q, or the next pdfpane-sync waits for the stale FIFO
+    signal.signal(signal.SIGHUP, lambda *_: sys.exit())
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit())
     try:
         tty.setcbreak(0)
         # Hide the cursor; report mouse clicks and wheel (SGR encoding, 1-based cells)
         sys.stdout.write("\x1b[?25l\x1b[?1000h\x1b[?1006h")
-        while not os.path.exists(pdf):
-            viewer.status("waiting for the PDF")
-            time.sleep(0.5)
-        viewer.reload_if_changed(force=True)
+        while not viewer.doc:
+            viewer.reload_if_changed(force=True)
+            if not viewer.doc:
+                viewer.status("waiting for the PDF")
+                time.sleep(0.2)
         buf = b""
         running = True
         while running:
             try:
-                ready, _, _ = select.select([0, ctl], [], [], 0.5)
+                ready, _, _ = select.select([0, ctl], [], [], 0.1)
             except InterruptedError:
                 ready = []
             if resized:
@@ -376,12 +517,12 @@ def main():
                 viewer.render()
             viewer.reload_if_changed()
     finally:
-        termios.tcsetattr(0, termios.TCSADRAIN, old)
-        sys.stdout.write("\x1b[?1006l\x1b[?1000l\x1b[H\x1b[2J\x1b[?25h")
-        sys.stdout.flush()
         os.close(ctl)
         if os.path.exists(fifo):
             os.remove(fifo)
+        termios.tcsetattr(0, termios.TCSADRAIN, old)
+        sys.stdout.write("\x1b[?1006l\x1b[?1000l\x1b[H\x1b[2J\x1b[?25h")
+        sys.stdout.flush()
 
 
 if __name__ == "__main__":
