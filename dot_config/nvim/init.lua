@@ -51,6 +51,20 @@ vim.api.nvim_set_keymap("n", "gb", ":bnext<CR>", { noremap = true, silent = true
 vim.api.nvim_set_keymap("n", "gB", ":bprevious<CR>", { noremap = true, silent = true })
 
 vim.opt.signcolumn = "yes" -- Always show sign column
+-- The one-wide sign column shows the highest-priority sign. Git signs (gitsigns, priority
+-- 6) win over diagnostics there; diagnostics also colour the line number, so both show.
+local sev = vim.diagnostic.severity
+vim.diagnostic.config({
+	signs = {
+		priority = 5,
+		numhl = {
+			[sev.ERROR] = "DiagnosticSignError",
+			[sev.WARN] = "DiagnosticSignWarn",
+			[sev.INFO] = "DiagnosticSignInfo",
+			[sev.HINT] = "DiagnosticSignHint",
+		},
+	},
+})
 vim.opt.colorcolumn = "100" -- Show column at 100 characters
 vim.opt.showmatch = true -- Highlight matching brackets
 vim.opt.matchtime = 2 -- How long to show matching bracket
