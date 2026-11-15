@@ -5,15 +5,17 @@ Needs a Sixel terminal (WezTerm, foot, Windows Terminal 1.22+), inside tmux 3.4+
 with Sixel. Renders with Poppler (python3-gi, python3-gi-cairo) and a small Sixel encoder
 in C, compiled with gcc on first use.
 
-    pdfpane file.pdf [page]
+    pdfpane file.pdf [page [y]]
 
-Keys: j/k or space/backspace next/previous page, g/G first/last, w fit width/page,
-J/K scroll (fit width), i invert colours, r redraw, q quit. Mouse: wheel turns pages
-(scrolls in fit width); double-click jumps to that spot in the LaTeX source in Neovim
-(SyncTeX + vimtex's VimtexInverseSearch), then focuses the pane in $PDFPANE_FROM.
-Other programs can turn the page through the control FIFO (see fifo_path), e.g.
-    echo "page 4" > "$(pdfpane --fifo file.pdf)"
-which is how Neovim's \\lv (pdfpane-sync) jumps to the cursor's page.
+Starts at page width, the pages one continuous strip. Keys: j/k (arrows, wheel) scroll,
+J/K or Ctrl-d/Ctrl-u half a screen, space/backspace a screen, n/p (PgDn/PgUp) next/
+previous page, g/G first/last, w whole page / page width (in whole page, j/k turn pages),
+i invert colours, r redraw, q quit. Double-click jumps to that spot in the LaTeX source
+in Neovim (SyncTeX + vimtex's VimtexInverseSearch), then focuses the pane in
+$PDFPANE_FROM. Other programs can move the view through the control FIFO (see
+fifo_path), with a page and optionally a height on it in points, e.g.
+    echo "page 4 300" > "$(pdfpane --fifo file.pdf)"
+which is how Neovim's \\lv (pdfpane-sync) shows the cursor's position.
 """
 
 import ctypes
@@ -38,6 +40,7 @@ import gi
 gi.require_version("Poppler", "0.18")
 from gi.repository import GLib, Poppler  # noqa: E402
 
+GAP = 12  # pixels of grey between pages in the continuous strip
 COLOURS = 64  # in the Sixel palette, at most 64 (32 turns some plot colours grey)
 SIXEL_C = r"""
 #include <stdio.h>
@@ -200,8 +203,8 @@ class Viewer:
     def __init__(self, pdf, page):
         self.pdf = pdf
         self.page = page
-        self.fit_width = False
-        self.scroll = 0  # pixel offset from the top in fit-width mode
+        self.fit_width = True
+        self.scroll = 0  # in fit width: pixels from the top of self.page to the view's top
         self.invert = False
         self.doc = None
         self.pages = 0
@@ -221,21 +224,47 @@ class Viewer:
         self.geometry = None  # where the page was drawn, for mapping clicks
         self.last_click = (0.0, None)
 
+    def page_h(self, page, w):
+        pw, ph = self.sizes[page - 1]
+        return max(1, int(w * ph / pw))
+
     def layout(self, page, scroll=0):
-        """(key, pad, cell w and h, page width, shown and full height in px, page points).
-        The key (page, width, scroll, height, invert, mtime) names the Sixel."""
+        """(key, pad, cell w and h, image w and h in px). The key (top page, width, scroll,
+        height, invert, mtime) names the Sixel; in fit width the view runs on into the
+        next pages, so page and scroll come back normalised."""
         cols, rows, cw, ch = pane_size()
         width_px = int(cols * cw)
         # Above the status bar. tmux sizes a Sixel in whole 6-pixel bands, rounded up to
         # rows; a pixel too tall spills onto the status line and tmux drops the image
         height_px = int((rows - 1) * ch) // 6 * 6
-        pw, ph = self.sizes[page - 1]
-        w = max(1, width_px if self.fit_width else int(min(width_px, height_px * pw / ph)))
-        full_h = max(1, int(w * ph / pw))
-        h = min(full_h, height_px)
-        scroll = max(0, min(scroll, full_h - h))
+        if self.fit_width:
+            w, h = max(1, width_px), height_px
+            page, scroll = self.normalise(page, scroll, w, h)
+        else:
+            pw, ph = self.sizes[page - 1]
+            w = max(1, int(min(width_px, height_px * pw / ph)))
+            h, scroll = min(self.page_h(page, w), height_px), 0
         pad = max(0, int((width_px - w) / cw / 2))
-        return (page, w, scroll, h, self.invert, self.mtime), pad, cw, ch, w, h, full_h, pw, ph
+        return (page, w, scroll, h, self.invert, self.mtime), pad, cw, ch, w, h
+
+    def normalise(self, page, scroll, w, h):
+        """The view's top as (page, scroll) within the strip, the last page ending at the
+        view's bottom at most."""
+        while scroll < 0 and page > 1:
+            page -= 1
+            scroll += self.page_h(page, w) + GAP
+        while page < self.pages and scroll >= self.page_h(page, w) + GAP:
+            scroll -= self.page_h(page, w) + GAP
+            page += 1
+        below, q = self.page_h(page, w) - max(scroll, 0), page
+        while below < h and q < self.pages:
+            q += 1
+            below += GAP + self.page_h(q, w)
+        if below < h:  # past the end: move up until the last page ends at the bottom
+            scroll -= h - below
+            if scroll < 0 and page > 1:
+                return self.normalise(page, scroll, w, h)
+        return page, max(0, scroll)
 
     def sixel(self, key):
         """The Sixel for a layout key: cached, from the worker, or made now."""
@@ -256,12 +285,30 @@ class Viewer:
             with self.render_lock:
                 if mtime != self.mtime:
                     return b""  # the PDF was reloaded meanwhile
-                surface = self.pixels.get((page, w, mtime))
-                if surface is None:
-                    surface = self.pixels[(page, w, mtime)] = self.render_page(page, w)
-                    while len(self.pixels) > 6:
-                        self.pixels.pop(next(iter(self.pixels)))
-            data = self.encode(surface, scroll, h, invert)
+                # The pages the view shows, with their top in view pixels
+                parts, top = [], -scroll
+                while top < h and page <= self.pages:
+                    surface = self.pixels.get((page, w, mtime))
+                    if surface is None:
+                        surface = self.pixels[(page, w, mtime)] = self.render_page(page, w)
+                        while len(self.pixels) > 8:
+                            self.pixels.pop(next(iter(self.pixels)))
+                    parts.append((surface, top))
+                    top += surface.get_height() + GAP
+                    page += 1
+            if len(parts) == 1 and parts[0][0].get_height() - scroll >= h:
+                data = self.encode(parts[0][0], scroll, h, invert)
+            else:
+                # Across a page break: join the pages, with grey between
+                view = cairo.ImageSurface(cairo.FORMAT_RGB24, w, h)
+                ctx = cairo.Context(view)
+                ctx.set_source_rgb(0.35, 0.35, 0.35)
+                ctx.paint()
+                for surface, y in parts:
+                    ctx.set_source_surface(surface, 0, y)
+                    ctx.paint()
+                view.flush()
+                data = self.encode(view, 0, h, invert)
             with self.lock:
                 self.sixels[key] = data
                 while len(self.sixels) > 12:
@@ -305,28 +352,28 @@ class Viewer:
     def render(self):
         """Draw the current page below a one-line status bar."""
         self.dirty = False
-        key, pad, cw, ch, w, h, full_h, pw, ph = self.layout(self.page, self.scroll)
-        self.scroll = key[2]
+        key, pad, cw, ch, w, h = self.layout(self.page, self.scroll)
+        self.page, self.scroll = key[0], key[2]
         sixel = self.sixel(key)
         out = sys.stdout.buffer
         # Synchronized output (mode 2026): the terminal shows the frame once complete
         out.write(b"\x1b[?2026h")
         # Clearing first shows a black pane while the image is processed; a page of the
         # same size and place covers the old one, so then just draw over it
-        if self.geometry is None or (self.geometry[0], self.geometry[3:5]) != (pad, (w, h)):
+        if self.geometry is None or self.geometry[:1] + self.geometry[3:] != (pad, w, h):
             out.write(b"\x1b[H\x1b[2J")
-        self.geometry = (pad, cw, ch, w, h, full_h, pw, ph)
+        self.geometry = (pad, cw, ch, w, h)
         # Centre the page horizontally
         out.write(f"\x1b[1;{pad + 1}H".encode())
         out.write(sixel)
         self.status()
         out.write(b"\x1b[?2026l")
         out.flush()
-        # Likely next: the neighbouring pages, or the next scroll steps in fit width
+        # Likely next: the next scroll steps in fit width, and the neighbouring pages
         nearby = [(self.page + d, 0) for d in (1, -1, 2, -2) if 1 <= self.page + d <= self.pages]
         if self.fit_width:
-            step = self.step()
-            nearby[:0] = [(self.page, self.scroll + step), (self.page, self.scroll - step)]
+            small, half, _ = self.steps()
+            nearby[:0] = [(self.page, self.scroll + d) for d in (small, -small, half, -half)]
         self.prefetch([self.layout(p, s)[0] for p, s in nearby])
 
     def status(self, message=None):
@@ -360,31 +407,43 @@ class Viewer:
         self.page = max(1, min(self.page, self.pages))
         self.render()
 
-    def step(self):
-        """Scroll step for J/K: most of a screen."""
+    def steps(self):
+        """Scroll steps in pixels: j/k, half a screen, a screen less a little overlap."""
         _, rows, _, ch = pane_size()
-        return int((rows - 1) * ch * 0.8)
+        h = int((rows - 1) * ch)
+        return max(int(h * 0.12), 1), h // 2, int(h * 0.9)
 
-    def goto(self, page):
+    def goto(self, page, scroll=0):
         page = max(1, min(page, self.pages))
-        if page != self.page:
-            self.page, self.scroll = page, 0
+        if (page, scroll) != (self.page, self.scroll):
+            self.page, self.scroll = page, scroll
             self.dirty = True
 
+    def scroll_by(self, pixels):
+        """Scroll in fit width; in whole-page view, turn a page instead."""
+        if self.fit_width:
+            self.goto(self.page, self.scroll + pixels)
+        else:
+            self.goto(self.page + (1 if pixels > 0 else -1))
+
     def key(self, k):
-        if k in ("j", " ", "n", "\x1b[B", "\x1b[6~"):
+        log("key", repr(k), "at page", self.page, "scroll", self.scroll)
+        small, half, screen = self.steps()
+        moves = {"j": small, "\x1b[B": small, "k": -small, "\x1b[A": -small,
+                 "J": half, "\x04": half, "K": -half, "\x15": -half,
+                 " ": screen, "\x7f": -screen}
+        if k in moves:
+            self.scroll_by(moves[k])
+        elif k in ("n", "\x1b[6~"):
             self.goto(self.page + 1)
-        elif k in ("k", "\x7f", "p", "\x1b[A", "\x1b[5~"):
-            self.goto(self.page - 1)
+        elif k in ("p", "\x1b[5~"):
+            self.goto(self.page - 1 if self.scroll == 0 else self.page)
         elif k == "g":
             self.goto(1)
         elif k == "G":
-            self.goto(self.pages)
+            self.goto(self.pages, 10**6 if self.fit_width else 0)  # the strip's end
         elif k == "w":
             self.fit_width, self.scroll = not self.fit_width, 0
-            self.dirty = True
-        elif k in ("J", "K") and self.fit_width:
-            self.scroll += self.step() if k == "J" else -self.step()
             self.dirty = True
         elif k == "i":
             self.invert = not self.invert
@@ -401,11 +460,7 @@ class Viewer:
         if not press:
             return
         if button in (64, 65):
-            down = button == 65
-            if self.fit_width:
-                self.key("J" if down else "K")
-            else:
-                self.goto(self.page + (1 if down else -1))
+            self.key("j" if button == 65 else "k")
             return
         if button != 0:
             return
@@ -421,15 +476,23 @@ class Viewer:
     def inverse_search(self, col, row):
         if not self.geometry:
             return
-        pad, cw, ch, w, h, full_h, pw, ph = self.geometry
-        # Centre of the clicked cell, in page pixels, then in PDF points from the top left
+        pad, cw, ch, w, h = self.geometry
+        # Centre of the clicked cell in view pixels, then the page under it in the strip
         x = (col - 1 - pad) * cw + cw / 2
-        y = (row - 1) * ch + ch / 2 + self.scroll
-        log("click at page px", x, y, "geometry", self.geometry)
-        if not (0 <= x <= w and 0 <= y <= full_h):
+        y = (row - 1) * ch + ch / 2
+        if not (0 <= x <= w and 0 <= y <= h):
             return
-        x, y = x / w * pw, y / full_h * ph
-        out = subprocess.run(["synctex", "edit", "-o", f"{self.page}:{x:.1f}:{y:.1f}:{self.pdf}"],
+        page, y = self.page, y + self.scroll
+        while y > self.page_h(page, w):
+            y -= self.page_h(page, w) + GAP
+            page += 1
+            if y < 0 or page > self.pages:
+                return  # on the grey between pages
+        log("click at page", page, "px", x, y)
+        pw, ph = self.sizes[page - 1]
+        # In PDF points from the top left
+        x, y = x / w * pw, y / self.page_h(page, w) * ph
+        out = subprocess.run(["synctex", "edit", "-o", f"{page}:{x:.1f}:{y:.1f}:{self.pdf}"],
                              capture_output=True, text=True).stdout
         log("synctex", out.strip().replace("\n", " | ")[:300])
         src = re.search(r"^Input:(.*)$", out, re.M)
@@ -451,9 +514,17 @@ class Viewer:
         self.status(f"-> {os.path.basename(path)}:{line.group(1)}")
 
     def command(self, line):
-        parts = line.split()
-        if len(parts) == 2 and parts[0] == "page" and parts[1].isdigit():
-            self.goto(int(parts[1]))
+        """`page N [y]`: show page N; in fit width with that height (points from the top)
+        a third of the way down the view."""
+        m = re.fullmatch(r"page (\d+)(?: ([\d.]+))?", line.strip())
+        if not m:
+            return
+        page = max(1, min(int(m.group(1)), self.pages))
+        scroll = 0
+        if m.group(2) and self.fit_width:
+            _, _, _, _, w, h = self.layout(page)
+            scroll = int(float(m.group(2)) / self.sizes[page - 1][1] * self.page_h(page, w) - h / 3)
+        self.page, self.scroll, self.dirty = page, scroll, True
 
 
 def main():
@@ -487,6 +558,8 @@ def main():
             if not viewer.doc:
                 viewer.status("waiting for the PDF")
                 time.sleep(0.2)
+        if len(sys.argv) > 3:
+            viewer.command(f"page {sys.argv[2]} {sys.argv[3]}")
         buf = b""
         running = True
         while running:
