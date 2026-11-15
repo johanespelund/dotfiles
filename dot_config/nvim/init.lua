@@ -637,7 +637,10 @@ require("conform").formatters.typstyle_wrap = {
 
 vim.keymap.set("n", "<leader>gd", "<cmd>lua vim.lsp.buf.definition()<CR>") -- Go to definition
 vim.keymap.set("n", "<leader>ca", "<cmd>lua vim.lsp.buf.code_action()<CR>") -- Code action
-vim.keymap.set({ "n", "x" }, "<leader>fm", require("conform").format, { desc = "Format (selection in visual mode)" })
+-- 10 s: latexindent (Perl) needs a few seconds on long LaTeX files; conform's default is 1 s
+vim.keymap.set({ "n", "x" }, "<leader>fm", function()
+	require("conform").format({ timeout_ms = 10000 })
+end, { desc = "Format (selection in visual mode)" })
 
 -- C/C++: clangd (Mason) needs compile_commands.json for real projects:
 -- `bear -- make`, `bear -- wmake` (OpenFOAM) or cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
