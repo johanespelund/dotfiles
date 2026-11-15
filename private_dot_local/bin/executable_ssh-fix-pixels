@@ -1,0 +1,72 @@
+#!/usr/bin/python3
+"""Keep the window's pixel size right in an SSH session from Windows.
+
+Windows' ssh client always reports the window as 640x480 pixels, so tmux and pdfpane
+size images for tiny characters (Sixel PDFs come out minuscule). This asks the
+terminal for its cell size (CSI 16 t; or $SSH_CELL, e.g. "10x20") and then, in the
+background, rewrites the session's pixel size as cols x rows x cell whenever it is off,
+also after resizes, until the login shell exits. Run from ~/.zshrc over SSH, outside tmux.
+"""
+
+import fcntl
+import os
+import re
+import select
+import struct
+import sys
+import termios
+import time
+import tty
+
+
+def winsize(fd):
+    return struct.unpack("HHHH", fcntl.ioctl(fd, termios.TIOCGWINSZ, b"\0" * 8))
+
+
+def query_cell(fd):
+    """(width, height) of a character cell in pixels, as the terminal reports it."""
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        os.write(fd, b"\x1b[16t")
+        reply = b""
+        end = time.monotonic() + 0.5
+        while not reply.endswith(b"t") and time.monotonic() < end:
+            if select.select([fd], [], [], end - time.monotonic())[0]:
+                reply += os.read(fd, 64)
+    finally:
+        termios.tcsetattr(fd, termios.TCSAFLUSH, old)
+    m = re.search(rb"\x1b\[6;(\d+);(\d+)t", reply)
+    return (int(m.group(2)), int(m.group(1))) if m else None
+
+
+def main():
+    if not os.isatty(0) or os.environ.get("TMUX"):
+        return
+    fd = os.open(os.ttyname(0), os.O_RDWR | os.O_NOCTTY)
+    m = re.fullmatch(r"(\d+)x(\d+)", os.environ.get("SSH_CELL", ""))
+    cell = (int(m.group(1)), int(m.group(2))) if m else query_cell(fd)
+    if not cell or not all(cell):
+        if winsize(fd)[2:] == (640, 480):  # only nag when the size is Windows' fake one
+            print("ssh-fix-pixels: terminal didn't report its cell size; set SSH_CELL=WxH",
+                  file=sys.stderr)
+        return
+    shell = os.getppid()
+    if os.fork():
+        return
+    os.setsid()  # detach from the shell's job control; the tty stays open via fd
+    while True:
+        try:
+            os.kill(shell, 0)
+        except ProcessLookupError:
+            break
+        rows, cols, xpx, ypx = winsize(fd)
+        want = (cols * cell[0], rows * cell[1])
+        if (xpx, ypx) != want:
+            # A changed size makes the kernel send SIGWINCH, so tmux re-reads it
+            fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, *want))
+        time.sleep(0.3)
+
+
+if __name__ == "__main__":
+    main()
